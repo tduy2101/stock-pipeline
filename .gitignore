@@ -1,0 +1,25 @@
+# Python / virtual environments
+venv/
+.venv/
+
+# Jupyter / Python caches
+__pycache__/
+*.py[cod]
+*.pyd
+*.pdb
+.ipynb_checkpoints/
+
+# Local environment / secrets (if you add them later)
+.env
+.env.*
+credentials.*
+secrets.*
+
+# Project data (can be large and changes over time)
+data-lake/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
