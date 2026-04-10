@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 import uuid
@@ -12,6 +13,33 @@ from .common import call_with_retry, save_partition_parquet, wait_for_rate_limit
 from .config import IngestionConfig
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _call_symbols_by_exchange(listing_obj: object, cfg: IngestionConfig) -> pd.DataFrame | None:
+    """Gọi Listing.symbols_by_exchange với tham số phù hợp KBS/VCI."""
+    if not hasattr(listing_obj, "symbols_by_exchange"):
+        return None
+    try:
+        wait_for_rate_limit(cfg.rate_limit_rpm)
+        sig = inspect.signature(listing_obj.symbols_by_exchange)
+        kwargs: dict = {}
+        if "lang" in sig.parameters:
+            kwargs["lang"] = "vi"
+        if "get_all" in sig.parameters:
+            kwargs["get_all"] = False
+        if "show_log" in sig.parameters:
+            kwargs["show_log"] = False
+        raw = listing_obj.symbols_by_exchange(**kwargs)
+    except Exception as ex:
+        LOGGER.warning("symbols_by_exchange: %s", ex)
+        return None
+    if raw is None:
+        return None
+    if hasattr(raw, "empty") and raw.empty:
+        return None
+    if not isinstance(raw, pd.DataFrame):
+        return None
+    return raw
 
 
 def _clean_text_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -32,8 +60,32 @@ def _clean_text_columns(df: pd.DataFrame) -> pd.DataFrame:
 def ingest_listing(cfg: IngestionConfig | None = None) -> str:
     cfg = cfg or IngestionConfig()
     df = pd.DataFrame()
+    src_used = ""
     for src in cfg.resolved_data_sources():
+        listing_obj = Listing(source=src)
         try:
+
+            def _by_exchange() -> pd.DataFrame | None:
+                return _call_symbols_by_exchange(listing_obj, cfg)
+
+            ex_fetched = call_with_retry(
+                _by_exchange,
+                max_attempts=cfg.api_retry_max_attempts,
+                base_delay_sec=cfg.api_retry_base_delay_sec,
+                label=f"symbols_by_exchange@{src}",
+            )
+            if ex_fetched is not None and not ex_fetched.empty:
+                ex_fetched = ex_fetched.copy()
+                ex_fetched.columns = [str(c).strip().lower() for c in ex_fetched.columns]
+                if "symbol" in ex_fetched.columns and "exchange" in ex_fetched.columns:
+                    df = ex_fetched
+                    src_used = src
+                    LOGGER.info(
+                        "symbols_by_exchange: %s mã (có sàn) từ %s",
+                        len(df),
+                        src.upper(),
+                    )
+                    break
 
             def _symbols() -> pd.DataFrame:
                 wait_for_rate_limit(cfg.rate_limit_rpm)
@@ -47,57 +99,85 @@ def ingest_listing(cfg: IngestionConfig | None = None) -> str:
             )
             if fetched is not None and not fetched.empty:
                 df = fetched.copy()
+                src_used = src
                 LOGGER.info("all_symbols: %s mã từ %s", len(df), src.upper())
                 break
         except Exception as ex:
-            LOGGER.warning("all_symbols(%s) lỗi: %s", src, ex)
+            LOGGER.warning("listing(%s) lỗi: %s", src, ex)
     if df.empty:
         LOGGER.warning("Không lấy được listing")
         return ""
     df.columns = [str(c).strip().lower() for c in df.columns]
     if "symbol" in df.columns:
         df["symbol"] = df["symbol"].astype(str).str.strip().str.upper()
+    if "exchange" in df.columns:
+        ex = df["exchange"].astype(str).str.strip().str.upper()
+        df["exchange"] = ex.mask(ex.isin(["", "NAN", "NONE", "<NA>"]))
     exchange_rows: list[dict] = []
+    # Theo vnstock KBS: VNMidCap, VNSmallCap — map cả alias cũ để tương thích
     index_exchange_map = {
         "VN30": "HOSE",
         "VNMIDCAP": "HOSE",
+        "VNMidCap": "HOSE",
         "VNSML": "HOSE",
+        "VNSmallCap": "HOSE",
         "VN100": "HOSE",
         "VNALL": "HOSE",
         "HNX30": "HNX",
         "HNXINDEX": "HNX",
     }
-    try:
-        listing_obj = Listing(source=cfg.resolved_data_sources()[0])
-        for idx_code, exchange in index_exchange_map.items():
-            try:
-                if not hasattr(listing_obj, "symbols_by_group"):
-                    continue
-                idx_df = listing_obj.symbols_by_group(group=idx_code)
-                if idx_df is None or idx_df.empty:
-                    continue
-                idx_df.columns = [str(c).strip().lower() for c in idx_df.columns]
-                sym_col = next((c for c in ["symbol", "ticker", "code"] if c in idx_df.columns), None)
-                if not sym_col:
-                    continue
-                for sym in idx_df[sym_col].dropna().astype(str).str.strip().str.upper().unique():
-                    exchange_rows.append({"symbol": sym, "exchange": exchange})
-            except Exception as ex:
-                LOGGER.debug("symbols_by_group(%s) lỗi: %s", idx_code, ex)
-    except Exception as ex:
-        LOGGER.warning("build exchange map lỗi: %s", ex)
-    if exchange_rows:
-        emap = pd.DataFrame(exchange_rows)
-        prio = {"HOSE": 0, "HNX": 1, "UPCOM": 2}
-        emap["_p"] = emap["exchange"].map(prio).fillna(9)
-        emap = emap.sort_values("_p").drop_duplicates("symbol", keep="first").drop(columns=["_p"])
-        df = df.drop(columns=["exchange"], errors="ignore").merge(emap, on="symbol", how="left")
-    else:
+    need_fallback = "exchange" not in df.columns or df["exchange"].isna().all()
+    if need_fallback or df["exchange"].isna().any():
+        try:
+            listing_obj = Listing(source=src_used or cfg.resolved_data_sources()[0])
+            for idx_code, exchange in index_exchange_map.items():
+                try:
+                    if not hasattr(listing_obj, "symbols_by_group"):
+                        continue
+                    idx_raw = listing_obj.symbols_by_group(group=idx_code)
+                    if idx_raw is None:
+                        continue
+                    if isinstance(idx_raw, pd.Series):
+                        if idx_raw.empty:
+                            continue
+                        syms = idx_raw.dropna().astype(str).str.strip().str.upper()
+                    else:
+                        idx_df = idx_raw
+                        if idx_df.empty:
+                            continue
+                        idx_df.columns = [str(c).strip().lower() for c in idx_df.columns]
+                        sym_col = next(
+                            (c for c in ["symbol", "ticker", "code"] if c in idx_df.columns),
+                            None,
+                        )
+                        if not sym_col:
+                            continue
+                        syms = idx_df[sym_col].dropna().astype(str).str.strip().str.upper()
+                    for sym in syms.unique():
+                        exchange_rows.append({"symbol": sym, "exchange": exchange})
+                except Exception as ex:
+                    LOGGER.debug("symbols_by_group(%s) lỗi: %s", idx_code, ex)
+        except Exception as ex:
+            LOGGER.warning("build exchange map lỗi: %s", ex)
+        if exchange_rows:
+            emap = pd.DataFrame(exchange_rows)
+            prio = {"HOSE": 0, "HNX": 1, "UPCOM": 2}
+            emap["_p"] = emap["exchange"].map(prio).fillna(9)
+            emap = emap.sort_values("_p").drop_duplicates("symbol", keep="first").drop(
+                columns=["_p"]
+            )
+            df = df.drop(columns=["exchange"], errors="ignore").merge(
+                emap, on="symbol", how="left"
+            )
+        elif "exchange" not in df.columns:
+            df["exchange"] = pd.NA
+    if "exchange" not in df.columns:
         df["exchange"] = pd.NA
     df["exchange"] = df["exchange"].fillna("UNKNOWN")
     before = len(df)
     if "type" in df.columns:
-        df = df[df["type"] == "stock"].copy()
+        tnorm = df["type"].astype(str).str.lower().str.strip()
+        df = df[tnorm == "stock"].copy()
     elif "id" in df.columns:
         df = df[df["id"] == 1].copy()
     LOGGER.info("Lọc stock: %s -> %s dòng", before, len(df))
@@ -124,9 +204,32 @@ def ingest_listing(cfg: IngestionConfig | None = None) -> str:
 
 def ingest_company_overview(cfg: IngestionConfig | None = None) -> str:
     cfg = cfg or IngestionConfig()
+    out_file = cfg.data_lake_root / "company" / "master" / "company_overview.parquet"
+    existing: set[str] = set()
+    df_old = pd.DataFrame()
+    if out_file.exists():
+        try:
+            df_old = pd.read_parquet(out_file)
+            if not df_old.empty and "ticker" in df_old.columns:
+                existing = set(
+                    df_old["ticker"].astype(str).str.strip().str.upper().dropna()
+                )
+        except Exception:
+            LOGGER.exception("Không đọc được file master %s, coi như chưa có mã cũ.", out_file)
+            df_old = pd.DataFrame()
+
+    tickers_batch = cfg.tickers[: cfg.max_tickers_per_run]
+    symbols_to_fetch = [t for t in tickers_batch if str(t).strip().upper() not in existing]
+    if not symbols_to_fetch:
+        LOGGER.info(
+            "Company master: mã trong batch đã có đủ trong %s — không gọi API, không ghi thêm.",
+            out_file,
+        )
+        return str(out_file)
+
     rows: list[dict] = []
-    n_run = min(len(cfg.tickers), cfg.max_tickers_per_run)
-    for idx, symbol in enumerate(cfg.tickers[: cfg.max_tickers_per_run]):
+    n_run = len(symbols_to_fetch)
+    for idx, symbol in enumerate(symbols_to_fetch):
         LOGGER.info("[%s/%s] Đang tải company %s...", idx + 1, n_run, symbol)
         row: dict = {}
         src_used = ""
@@ -167,7 +270,7 @@ def ingest_company_overview(cfg: IngestionConfig | None = None) -> str:
         row["ticker"] = symbol
         row["source"] = src_used
         rows.append(row)
-        if idx < min(len(cfg.tickers), cfg.max_tickers_per_run) - 1:
+        if idx < n_run - 1:
             time.sleep(cfg.inter_request_delay_sec)
     df_new = pd.DataFrame(rows)
     if df_new.empty:
@@ -181,16 +284,7 @@ def ingest_company_overview(cfg: IngestionConfig | None = None) -> str:
     df_new["snapshot_date"] = cfg.run_date
     df_new["fetched_at"] = datetime.now(timezone.utc).isoformat()
     df_new["ingest_run_id"] = str(uuid.uuid4())
-    out_file = cfg.data_lake_root / "company" / "master" / "company_overview.parquet"
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    if out_file.exists():
-        try:
-            df_old = pd.read_parquet(out_file)
-        except Exception:
-            LOGGER.exception("Không đọc được file cũ %s, sẽ tạo mới.", out_file)
-            df_old = pd.DataFrame()
-    else:
-        df_old = pd.DataFrame()
     if df_old.empty:
         combined = df_new
     else:
@@ -200,11 +294,18 @@ def ingest_company_overview(cfg: IngestionConfig | None = None) -> str:
             ignore_index=True,
             sort=False,
         )
+    if "ticker" in combined.columns:
+        combined = combined.drop_duplicates(subset=["ticker"], keep="first")
     try:
         combined.to_parquet(out_file, engine="pyarrow", index=False)
     except ImportError:
         combined.to_parquet(out_file, engine="fastparquet", index=False)
-    LOGGER.info("✓ company master append: +%s dòng, tổng %s dòng -> %s", len(df_new), len(combined), out_file)
+    LOGGER.info(
+        "✓ company master: thêm %s mã mới, tổng %s dòng (theo ticker duy nhất) -> %s",
+        len(df_new),
+        len(combined),
+        out_file,
+    )
     return str(out_file)
 
 
