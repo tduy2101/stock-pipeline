@@ -1,0 +1,23 @@
+# Optional multi-source config for news. Edit URLs as needed; respect site ToS / robots.txt.
+rss_feeds:
+  - https://vnexpress.net/rss/kinh-doanh.rss
+
+# HTML list pages: fetch list_url and collect article links via link_css.
+html_sources:
+  - id: vnexpress_kinh_doanh
+    enabled: true
+    list_url: "https://vnexpress.net/kinh-doanh"
+    link_css: "article.item-news h3.title-news a"
+    source_label: "vnexpress_kinh_doanh_html"
+  # CafeF / các trang CK: nhiều site render bằng JS — HTML tĩnh có thể không có link.
+  # Dùng DevTools (tab Network/XHR) hoặc RSS chính thức nếu có; chỉnh list_url + link_css rồi enabled: true.
+  - id: cafef_template
+    enabled: false
+    list_url: "https://cafef.vn/du-lieu.chn"
+    link_css: "article h2 a"
+    source_label: "cafef_html"
+  - id: example_placeholder
+    enabled: false
+    list_url: "https://example.com/news-list"
+    link_css: "a.article-title"
+    source_label: "html_example"
