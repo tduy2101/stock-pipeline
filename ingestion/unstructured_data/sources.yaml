@@ -1,23 +1,43 @@
-# Optional multi-source config for news. Edit URLs as needed; respect site ToS / robots.txt.
+# Multi-source config for news ingestion.
+# Edit URLs as needed; respect site ToS / robots.txt.
+
 rss_feeds:
   - https://vnexpress.net/rss/kinh-doanh.rss
 
 # HTML list pages: fetch list_url and collect article links via link_css.
+# Optional detail selectors allow the detail fetcher to use config-driven
+# extraction instead of (or in addition to) built-in domain fetchers.
 html_sources:
   - id: vnexpress_kinh_doanh
     enabled: true
     list_url: "https://vnexpress.net/kinh-doanh"
+    base_url: "https://vnexpress.net"
     link_css: "article.item-news h3.title-news a"
-    source_label: "vnexpress_kinh_doanh_html"
-  # CafeF / các trang CK: nhiều site render bằng JS — HTML tĩnh có thể không có link.
-  # Dùng DevTools (tab Network/XHR) hoặc RSS chính thức nếu có; chỉnh list_url + link_css rồi enabled: true.
+    source_label: "vnexpress"
+    section: "kinh-doanh"
+    detail:
+      title_css: "h1.title-detail"
+      summary_css: "p.description"
+      body_css: "article.fck_detail p"
+      published_at_css: "span.date"
+      author_css: "p.author_mail"
+
+  # CafeF template — JS-rendered, HTML may be empty.
   - id: cafef_template
     enabled: false
     list_url: "https://cafef.vn/du-lieu.chn"
+    base_url: "https://cafef.vn"
     link_css: "article h2 a"
-    source_label: "cafef_html"
+    source_label: "cafef"
+    section: "du-lieu"
+    detail:
+      title_css: "h1.title"
+      summary_css: "h2.sapo"
+      body_css: "div#mainContent p"
+      author_css: "p.author"
+
   - id: example_placeholder
     enabled: false
     list_url: "https://example.com/news-list"
     link_css: "a.article-title"
-    source_label: "html_example"
+    source_label: "example"

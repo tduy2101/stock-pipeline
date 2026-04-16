@@ -1,3 +1,11 @@
+"""
+HTML list page adapter — **Discovery tier only**.
+
+Fetches static HTML list pages (e.g. VnExpress category page) and extracts
+article links + titles.  Does **not** set ``body_text`` — that is the job of
+the detail-fetch tier.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -13,21 +21,35 @@ from bs4 import BeautifulSoup
 from ingestion.common import call_with_retry, wait_for_rate_limit
 
 from .config import NewsIngestionConfig
-from .news_schema import NEWS_COLUMNS, _compact_text, empty_news_frame, normalize_url
+from .schemas import (
+    DISCOVERY_COLUMNS,
+    canonicalize_url,
+    compact_text,
+    compute_discovery_id,
+    empty_discovery_frame,
+)
 
 LOGGER = logging.getLogger(__name__)
 
 
 class HtmlListAdapter:
-    """Fetch a static HTML list page and collect article links via CSS selector."""
+    """Fetch static HTML list pages and emit **DISCOVERY** records.
 
-    def __init__(self, cfg: NewsIngestionConfig, *, html_specs: list[dict[str, Any]]) -> None:
+    Each ``html_source`` spec in ``sources.yaml`` defines a ``list_url`` and
+    ``link_css`` selector.  The adapter collects ``(title, url)`` pairs — no
+    ``body_text`` is produced at this tier.
+    """
+
+    def __init__(
+        self, cfg: NewsIngestionConfig, *, html_specs: list[dict[str, Any]]
+    ) -> None:
         self.cfg = cfg
         self.html_specs = html_specs
 
     def fetch(self) -> pd.DataFrame:
+        """Return a DataFrame with :data:`DISCOVERY_COLUMNS`."""
         if not self.cfg.enable_html or not self.html_specs:
-            return empty_news_frame()
+            return empty_discovery_frame()
 
         rows: list[dict[str, Any]] = []
         fetched_at = datetime.now(timezone.utc).isoformat()
@@ -43,12 +65,20 @@ class HtmlListAdapter:
         for spec in self.html_specs:
             if not spec.get("enabled", False):
                 continue
-            list_url = str(spec.get("list_url") or "").strip()
-            link_css = str(spec.get("link_css") or "").strip()
-            source_label = str(spec.get("source_label") or spec.get("id") or "html").strip()
+            list_url: str = str(spec.get("list_url") or "").strip()
+            link_css: str = str(spec.get("link_css") or "").strip()
+            source_label: str = str(
+                spec.get("source_label") or spec.get("id") or "html"
+            ).strip()
+            section: str = str(spec.get("section") or spec.get("id") or "").strip()
             link_regex = spec.get("link_regex")
+            base_url: str = str(spec.get("base_url") or list_url).strip()
+
             if not list_url or not link_css:
-                LOGGER.warning("HtmlListAdapter: skip spec missing list_url or link_css: %s", spec.get("id"))
+                LOGGER.warning(
+                    "HtmlListAdapter: skip spec missing list_url or link_css: %s",
+                    spec.get("id"),
+                )
                 continue
 
             wait_for_rate_limit(self.cfg.rate_limit_rpm)
@@ -73,7 +103,9 @@ class HtmlListAdapter:
             try:
                 anchors = soup.select(link_css)
             except Exception as ex:
-                LOGGER.warning("HtmlListAdapter: bad selector %r: %s", link_css, ex)
+                LOGGER.warning(
+                    "HtmlListAdapter: bad selector %r: %s", link_css, ex
+                )
                 continue
 
             pat = re.compile(str(link_regex)) if link_regex else None
@@ -84,29 +116,43 @@ class HtmlListAdapter:
                 href = a.get("href")
                 if not href:
                     continue
-                url = normalize_url(urljoin(list_url, str(href).strip()))
-                if not url or not url.startswith("http"):
+                raw_url = urljoin(list_url, str(href).strip())
+                curl = canonicalize_url(raw_url, base_url=base_url)
+                if not curl or not curl.startswith("http"):
                     continue
-                if pat and not pat.search(url):
+                if pat and not pat.search(curl):
                     continue
-                title = _compact_text(a.get_text())
+
+                title = compact_text(a.get_text())
+                source = source_label
+
                 rows.append(
                     {
-                        "article_id": "",
-                        "source": f"html_{source_label}",
-                        "ticker": pd.NA,
+                        "discovery_id": compute_discovery_id(
+                            curl, source, "", title
+                        ),
+                        "source": source,
+                        "source_type": "html_list",
+                        "section": section,
                         "title": title,
-                        "summary": title,
-                        "body_text": title,
-                        "url": url,
+                        "summary": "",
+                        "url": raw_url,
+                        "canonical_url": curl,
                         "published_at": None,
                         "fetched_at": fetched_at,
-                        "language": pd.NA,
-                        "raw_ref": f"{list_url} | {url}",
+                        "language": "vi",
+                        "raw_ref": f"{list_url} | {curl}",
                     }
                 )
                 n += 1
 
+            LOGGER.info(
+                "HtmlListAdapter [%s]: collected %d links from %s",
+                source_label,
+                n,
+                list_url,
+            )
+
         if not rows:
-            return empty_news_frame()
-        return pd.DataFrame(rows, columns=NEWS_COLUMNS)
+            return empty_discovery_frame()
+        return pd.DataFrame(rows, columns=DISCOVERY_COLUMNS)

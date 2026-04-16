@@ -1,12 +1,34 @@
+"""
+Legacy news schema kept for backward compatibility with existing notebooks.
+
+The canonical schemas are now in :mod:`schemas` (``DISCOVERY_COLUMNS`` and
+``ARTICLE_COLUMNS``).  Functions here delegate to :mod:`schemas` where
+possible.
+
+**Key change**: ``finalize_news_frame`` no longer fills ``body_text`` from
+``summary`` or ``title``.  This was the root cause of "fake body" data.
+"""
+
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
+import warnings
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import pandas as pd
+
+from .schemas import (
+    canonicalize_url,
+    compact_text,
+    na_safe_str,
+    strip_html,
+)
+
+LOGGER = logging.getLogger(__name__)
 
 _NEWS_WS = re.compile(r"\s+")
 
@@ -29,66 +51,27 @@ def empty_news_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=NEWS_COLUMNS)
 
 
+# ── URL normalization ───────────────────────────────────────────────────────
+
 def normalize_url(url: str | None) -> str:
-    if url is None or (isinstance(url, float) and pd.isna(url)):
-        return ""
-    s = str(url).strip()
-    if not s or s.lower() in ("nan", "none", "<na>"):
-        return ""
-    if s.startswith("//"):
-        s = "https:" + s
-    if not s.startswith(("http://", "https://")):
-        s = "https://cafef.vn" + (s if s.startswith("/") else "/" + s)
-    try:
-        p = urlparse(s)
-        path = p.path or ""
-        if path != "/" and path.endswith("/"):
-            path = path.rstrip("/")
-        netloc = (p.hostname or "").lower()
-        if p.port and p.port not in (80, 443):
-            netloc = f"{netloc}:{p.port}"
-        scheme = p.scheme.lower() if p.scheme else "https"
-        if scheme not in ("http", "https"):
-            scheme = "https"
-        return urlunparse((scheme, netloc, path, "", p.query, ""))
-    except Exception:
-        return s
+    """Normalize a URL **without** hardcoding any domain.
+
+    .. deprecated::
+       Use :func:`schemas.canonicalize_url` with an explicit ``base_url``
+       instead. This wrapper calls ``canonicalize_url(url, base_url=None)``
+       which drops purely-relative paths (returning ``""``).
+    """
+    return canonicalize_url(url, base_url=None)
 
 
-def _na_safe_str(val: Any) -> str:
-    """Chuỗi hóa ô DataFrame/Series; tránh ``pd.NA or ''`` (ambiguous truth value)."""
-    if val is None:
-        return ""
-    try:
-        if pd.isna(val):
-            return ""
-    except TypeError:
-        pass
-    return str(val)
+# ── Text helpers (re-exported from schemas) ─────────────────────────────────
+
+_compact_text = compact_text
+_na_safe_str = na_safe_str
+strip_html_to_text = strip_html
 
 
-def _compact_text(text: str | None) -> str:
-    if text is None or (isinstance(text, float) and pd.isna(text)):
-        return ""
-    s = str(text).replace("\r", " ").replace("\n", " ")
-    s = _NEWS_WS.sub(" ", s).strip()
-    if s.lower() in ("nan", "none", "<na>"):
-        return ""
-    return s
-
-
-def strip_html_to_text(html: str | None) -> str:
-    if not html or (isinstance(html, float) and pd.isna(html)):
-        return ""
-    raw = str(html)
-    try:
-        from bs4 import BeautifulSoup
-
-        soup = BeautifulSoup(raw, "html.parser")
-        return _compact_text(soup.get_text(" "))
-    except Exception:
-        return _compact_text(re.sub(r"<[^>]+>", " ", raw))
-
+# ── Article ID ──────────────────────────────────────────────────────────────
 
 def compute_article_id(
     *,
@@ -97,14 +80,16 @@ def compute_article_id(
     published_at: Any = "",
     ticker: Any = "",
 ) -> str:
-    """Hash id; mọi tham số được đưa qua ``_na_safe_str`` (tránh ``pd.NA`` từ RSS/HTML)."""
-    norm_u = normalize_url(_na_safe_str(url))
-    t = _compact_text(_na_safe_str(title))
-    p = _compact_text(_na_safe_str(published_at))
-    sym = _compact_text(_na_safe_str(ticker)).upper()
+    """Legacy hash ID (includes ticker in the payload)."""
+    norm_u = canonicalize_url(na_safe_str(url))
+    t = compact_text(na_safe_str(title))
+    p = compact_text(na_safe_str(published_at))
+    sym = compact_text(na_safe_str(ticker)).upper()
     payload = f"{norm_u}\n{t}\n{p}\n{sym}".encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
+
+# ── Timestamp parsing ──────────────────────────────────────────────────────
 
 def _parse_ts(val: Any) -> str | None:
     if val is None or (isinstance(val, float) and pd.isna(val)):
@@ -122,6 +107,8 @@ def _parse_ts(val: Any) -> str | None:
         return str(val)
 
 
+# ── Dedup ───────────────────────────────────────────────────────────────────
+
 def dedupe_news(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -131,12 +118,24 @@ def dedupe_news(df: pd.DataFrame) -> pd.DataFrame:
     return out.drop_duplicates(subset=["article_id"], keep="first")
 
 
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
 def _is_blank_series(s: pd.Series) -> pd.Series:
     t = s.astype(str).str.strip()
     return t.isna() | (t == "") | (t.str.lower() == "nan") | (t.str.lower() == "<na>")
 
 
-def finalize_news_frame(df: pd.DataFrame, *, run_fetched_at: str | None = None) -> pd.DataFrame:
+# ── Finalize (PATCHED: no longer fakes body_text) ──────────────────────────
+
+def finalize_news_frame(
+    df: pd.DataFrame, *, run_fetched_at: str | None = None
+) -> pd.DataFrame:
+    """Clean and finalize a legacy NEWS_COLUMNS DataFrame.
+
+    **Breaking change**: ``body_text`` is **no longer** back-filled from
+    ``summary`` or ``title``.  Empty ``body_text`` stays empty — the
+    canonical pipeline fills it only when real content is available.
+    """
     if df.empty:
         return empty_news_frame()
     out = df.copy()
@@ -144,22 +143,20 @@ def finalize_news_frame(df: pd.DataFrame, *, run_fetched_at: str | None = None) 
     for col in NEWS_COLUMNS:
         if col not in out.columns:
             out[col] = pd.NA
-    # Một lần chạy = một mốc fetched_at cho toàn bộ dòng (tránh chuỗi rỗng từ adapter).
     out["fetched_at"] = fetched
-    out["url"] = out["url"].map(lambda x: normalize_url(x) if pd.notna(x) else "")
-    # summary / body_text: luôn có nội dung khi có title hoặc url.
+    out["url"] = out["url"].map(lambda x: canonicalize_url(x) if pd.notna(x) else "")
+
     sum_blank = _is_blank_series(out["summary"])
-    out.loc[sum_blank, "summary"] = out.loc[sum_blank, "title"].map(_compact_text)
-    body_blank = _is_blank_series(out["body_text"])
-    out.loc[body_blank, "body_text"] = out.loc[body_blank, "summary"].map(_compact_text)
-    # raw_ref: tham chiếu nguồn (feed|url đã set ở RSS; vnstock dùng url bài).
+    out.loc[sum_blank, "summary"] = out.loc[sum_blank, "title"].map(compact_text)
+
     rr_blank = _is_blank_series(out["raw_ref"])
     out.loc[rr_blank, "raw_ref"] = out.loc[rr_blank, "url"].astype(str)
+
     article_ids: list[str] = []
     for _, r in out.iterrows():
         existing = r["article_id"]
         if existing is not None and pd.notna(existing):
-            s = _compact_text(_na_safe_str(existing))
+            s = compact_text(na_safe_str(existing))
             if s:
                 article_ids.append(s)
                 continue
@@ -176,13 +173,15 @@ def finalize_news_frame(df: pd.DataFrame, *, run_fetched_at: str | None = None) 
     return out[NEWS_COLUMNS]
 
 
+# ── Recency filter ──────────────────────────────────────────────────────────
+
 def filter_news_by_recency(
     df: pd.DataFrame,
     *,
     days_back: int,
     keep_undated: bool = False,
 ) -> pd.DataFrame:
-    """Giữ bài có ``published_at`` trong ``days_back`` ngày gần nhất (UTC)."""
+    """Keep rows with ``published_at`` within *days_back* days (UTC)."""
     if df.empty or days_back <= 0 or "published_at" not in df.columns:
         return df
     cutoff = pd.Timestamp.now(tz=timezone.utc) - pd.Timedelta(days=int(days_back))
@@ -193,10 +192,8 @@ def filter_news_by_recency(
         keep = recent | undated
     else:
         keep = recent
-        # Trang list HTML thường không có ``published_at`` — vẫn giữ để tránh mất cả nhánh HTML.
         if "source" in df.columns:
             src = df["source"].astype(str)
             html_undated = undated & src.str.startswith("html_")
             keep = keep | html_undated
-    out = df.loc[keep.fillna(False)].copy()
-    return out
+    return df.loc[keep.fillna(False)].copy()

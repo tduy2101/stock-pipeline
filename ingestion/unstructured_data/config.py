@@ -42,6 +42,20 @@ class NewsIngestionConfig:
     #: False: gộp một file ``news/items/`` như trước.
     split_news_output_by_source: bool = True
 
+    # ── Detail-fetch settings (Tier 2) ──────────────────────────────────────
+    #: Bật/tắt bước fetch detail page để lấy body_text thật.
+    enable_detail_fetch: bool = True
+    #: Giới hạn số URL detail sẽ fetch trong một lần chạy (tránh quá tải / bị ban).
+    max_detail_fetch_per_run: int = 200
+    #: Timeout (giây) cho mỗi request detail page.
+    detail_fetch_timeout_sec: int = 30
+    #: Độ dài tối thiểu body_text (ký tự) để coi là "article" thay vì "snippet".
+    detail_min_body_length: int = 200
+    #: Ghi ra file discovery parquet riêng (Tier 1).
+    output_discovery: bool = True
+    #: Ghi ra file articles parquet (Tier 2 — canonical).
+    output_articles: bool = True
+
     @property
     def run_date(self) -> str:
         return date.today().isoformat()
