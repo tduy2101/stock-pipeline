@@ -4,9 +4,7 @@
 rss_feeds:
   - https://vnexpress.net/rss/kinh-doanh.rss
 
-# HTML list pages: fetch list_url and collect article links via link_css.
-# Optional detail selectors allow the detail fetcher to use config-driven
-# extraction instead of (or in addition to) built-in domain fetchers.
+
 html_sources:
   - id: vnexpress_kinh_doanh
     enabled: true

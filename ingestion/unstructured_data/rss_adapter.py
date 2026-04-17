@@ -1,212 +1,101 @@
-"""
-RSS / Atom feed adapter — **Discovery tier only**.
-
-Parses feeds via ``feedparser``, strips HTML from summaries, and outputs
-clean :data:`DISCOVERY_COLUMNS` records.  ``body_text`` is left to the
-detail-fetch tier.
-"""
+"""RSS adapter for one-layer news ingestion."""
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
 from urllib.parse import urlparse
 
+import feedparser
 import pandas as pd
 import requests
 
 from ingestion.common import call_with_retry, wait_for_rate_limit
 
 from .config import NewsIngestionConfig
-from .schemas import (
-    DISCOVERY_COLUMNS,
-    canonicalize_url,
+from .schema import (
+    NEWS_COLUMNS,
     compact_text,
-    compute_discovery_id,
-    empty_discovery_frame,
+    compute_article_id,
+    dedupe_news,
+    empty_news_frame,
+    normalize_url,
+    parse_datetime_to_iso_utc,
+    safe_json_dumps,
     strip_html,
 )
 
 LOGGER = logging.getLogger(__name__)
 
 
-def _feed_hostname(feed_url: str) -> str:
-    try:
-        h = urlparse(feed_url).hostname or "rss"
-        return h.lower()
-    except Exception:
-        return "rss"
+def _source_from_feed(url: str) -> str:
+    host = (urlparse(url).hostname or "rss").lower().replace(".", "_")
+    return f"rss_{host}"
 
 
-def _section_from_feed_url(feed_url: str) -> str:
-    """Best-effort section extraction, e.g. ``kinh-doanh`` from the path."""
-    try:
-        path = urlparse(feed_url).path or ""
-        parts = [p for p in path.strip("/").split("/") if p and p != "rss"]
-        if parts:
-            segment = parts[-1]
-            if segment.endswith(".rss"):
-                segment = segment[:-4]
-            return segment
-        return ""
-    except Exception:
-        return ""
+def fetch_rss_news(cfg: NewsIngestionConfig, feed_urls: list[str]) -> pd.DataFrame:
+    if not feed_urls:
+        return empty_news_frame()
+    fetched_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    rows: list[dict[str, str | None]] = []
+    max_per = max(1, int(cfg.max_articles_per_source))
 
+    for feed_url in feed_urls:
+        wait_for_rate_limit(cfg.rate_limit_rpm)
 
-def _entry_published_iso(entry: Any) -> str | None:
-    for attr in ("published_parsed", "updated_parsed"):
-        tp = getattr(entry, attr, None)
-        if tp:
-            try:
-                dt = datetime(
-                    tp.tm_year, tp.tm_mon, tp.tm_mday,
-                    tp.tm_hour, tp.tm_min, tp.tm_sec,
-                    tzinfo=timezone.utc,
-                )
-                return dt.isoformat()
-            except Exception:
-                pass
-    raw = getattr(entry, "published", None) or getattr(entry, "updated", None)
-    if raw:
-        parsed = pd.to_datetime(raw, errors="coerce")
-        if pd.notna(parsed):
-            try:
-                return parsed.isoformat()
-            except Exception:
-                return str(raw)
-    return None
+        def _get() -> str:
+            r = requests.get(feed_url, timeout=cfg.timeout_sec)
+            r.raise_for_status()
+            return r.text
 
-
-def _entry_link(entry: Any) -> str:
-    link = getattr(entry, "link", None) or ""
-    if isinstance(link, list) and link:
-        link = link[0]
-    return str(link).strip()
-
-
-class RssAdapter:
-    """Parse RSS/Atom feeds and emit **DISCOVERY** records.
-
-    Summaries are cleaned with :func:`strip_html` to remove ``<img>``,
-    ``<a>`` and other markup commonly found in RSS descriptions.
-    """
-
-    def __init__(
-        self,
-        cfg: NewsIngestionConfig,
-        *,
-        feed_urls: list[str] | None = None,
-    ) -> None:
-        self.cfg = cfg
-        self._feed_urls = feed_urls
-
-    def fetch(self) -> pd.DataFrame:
-        """Return a DataFrame with :data:`DISCOVERY_COLUMNS`."""
         try:
-            import feedparser
-        except ImportError as ex:
-            LOGGER.warning("RssAdapter: feedparser not installed (%s) — skip.", ex)
-            return empty_discovery_frame()
+            content = call_with_retry(
+                _get,
+                max_attempts=cfg.api_retry_max_attempts,
+                base_delay_sec=cfg.api_retry_base_delay_sec,
+                label=f"rss:{feed_url}",
+            )
+            parsed = feedparser.parse(content)
+        except Exception as ex:
+            LOGGER.warning("Failed RSS feed %s: %s", feed_url, ex)
+            continue
 
-        urls = list(
-            self._feed_urls if self._feed_urls is not None else self.cfg.rss_feed_urls
-        )
-        if not urls:
-            LOGGER.info("RssAdapter: no rss_feed_urls — skip.")
-            return empty_discovery_frame()
-
-        rows: list[dict[str, Any]] = []
-        max_per = max(1, self.cfg.max_articles_per_source)
-        fetched_at = datetime.now(timezone.utc).isoformat()
-
-        for feed_url in urls:
-            wait_for_rate_limit(self.cfg.rate_limit_rpm)
-            host = _feed_hostname(feed_url)
-            source = host
-            section = _section_from_feed_url(feed_url)
-
-            def _fetch_feed() -> str:
-                wait_for_rate_limit(self.cfg.rate_limit_rpm)
-                r = requests.get(
-                    feed_url,
-                    timeout=30,
-                    headers={
-                        "User-Agent": (
-                            "Mozilla/5.0 (compatible; stock-pipeline-news/1.0;"
-                            " +https://github.com/)"
-                        ),
-                        "Accept": (
-                            "application/rss+xml, application/xml, text/xml;q=0.9,"
-                            " */*;q=0.8"
-                        ),
-                    },
-                )
-                r.raise_for_status()
-                return r.text
-
-            try:
-                body = call_with_retry(
-                    _fetch_feed,
-                    max_attempts=self.cfg.api_retry_max_attempts,
-                    base_delay_sec=self.cfg.api_retry_base_delay_sec,
-                    label=f"rss:{host}",
-                )
-                parsed = feedparser.parse(body)
-            except Exception as ex:
-                LOGGER.warning(
-                    "RssAdapter: failed to fetch/parse %s: %s", feed_url, ex
-                )
+        source = _source_from_feed(feed_url)
+        entries = list(getattr(parsed, "entries", []) or [])[:max_per]
+        for entry in entries:
+            title = compact_text(getattr(entry, "title", ""))
+            url = normalize_url(getattr(entry, "link", ""))
+            if not title or not url:
                 continue
-
-            if getattr(parsed, "bozo", False) and not getattr(
-                parsed, "entries", None
-            ):
-                LOGGER.warning(
-                    "RssAdapter: feed may be ill-formed %s: %s",
-                    feed_url,
-                    getattr(parsed, "bozo_exception", ""),
-                )
-
-            entries = list(getattr(parsed, "entries", []) or [])[:max_per]
-            for entry in entries:
-                title = compact_text(getattr(entry, "title", None))
-                raw_link = _entry_link(entry)
-                curl = canonicalize_url(raw_link, base_url=None)
-                raw_summary = getattr(entry, "summary", None) or getattr(
-                    entry, "description", None
-                )
-                summary = strip_html(raw_summary) if raw_summary else ""
-
-                pub = _entry_published_iso(entry)
-                raw_ref = f"{feed_url} | {curl}" if curl else feed_url
-
-                rows.append(
-                    {
-                        "discovery_id": compute_discovery_id(
-                            curl, source, pub or "", title
-                        ),
-                        "source": source,
-                        "source_type": "rss",
-                        "section": section,
-                        "title": title,
-                        "summary": summary,
-                        "url": raw_link,
-                        "canonical_url": curl,
-                        "published_at": pub,
-                        "fetched_at": fetched_at,
-                        "language": "vi",
-                        "raw_ref": raw_ref,
-                    }
-                )
-
-            LOGGER.info(
-                "RssAdapter [%s/%s]: collected %d entries",
-                host,
-                section or "*",
-                len(entries),
+            summary = strip_html(
+                getattr(entry, "summary", "") or getattr(entry, "description", "")
+            )
+            published_at = parse_datetime_to_iso_utc(
+                getattr(entry, "published", "") or getattr(entry, "updated", "")
+            )
+            article_id = compute_article_id(
+                url=url,
+                source=source,
+                published_at=published_at or "",
+                ticker="",
+                title=title,
+            )
+            rows.append(
+                {
+                    "article_id": article_id,
+                    "source": source,
+                    "ticker": None,
+                    "title": title,
+                    "summary": summary,
+                    "body_text": "",
+                    "url": url,
+                    "published_at": published_at,
+                    "fetched_at": fetched_at,
+                    "language": "vi",
+                    "raw_ref": safe_json_dumps(dict(entry)),
+                }
             )
 
-        if not rows:
-            return empty_discovery_frame()
-        return pd.DataFrame(rows, columns=DISCOVERY_COLUMNS)
+    if not rows:
+        return empty_news_frame()
+    return dedupe_news(pd.DataFrame(rows, columns=NEWS_COLUMNS))

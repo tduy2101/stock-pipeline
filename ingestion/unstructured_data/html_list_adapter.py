@@ -1,15 +1,8 @@
-"""
-HTML list page adapter — **Discovery tier only**.
-
-Fetches static HTML list pages (e.g. VnExpress category page) and extracts
-article links + titles.  Does **not** set ``body_text`` — that is the job of
-the detail-fetch tier.
-"""
+"""HTML list adapter for one-layer news ingestion."""
 
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urljoin
@@ -21,138 +14,96 @@ from bs4 import BeautifulSoup
 from ingestion.common import call_with_retry, wait_for_rate_limit
 
 from .config import NewsIngestionConfig
-from .schemas import (
-    DISCOVERY_COLUMNS,
-    canonicalize_url,
+from .schema import (
+    NEWS_COLUMNS,
     compact_text,
-    compute_discovery_id,
-    empty_discovery_frame,
+    compute_article_id,
+    dedupe_news,
+    empty_news_frame,
+    normalize_url,
+    safe_json_dumps,
 )
 
 LOGGER = logging.getLogger(__name__)
 
 
-class HtmlListAdapter:
-    """Fetch static HTML list pages and emit **DISCOVERY** records.
+def fetch_html_list_news(
+    cfg: NewsIngestionConfig, html_specs: list[dict[str, Any]]
+) -> pd.DataFrame:
+    if not html_specs:
+        return empty_news_frame()
+    fetched_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    rows: list[dict[str, str | None]] = []
+    max_per = max(1, int(cfg.max_articles_per_source))
 
-    Each ``html_source`` spec in ``sources.yaml`` defines a ``list_url`` and
-    ``link_css`` selector.  The adapter collects ``(title, url)`` pairs — no
-    ``body_text`` is produced at this tier.
-    """
+    for spec in html_specs:
+        if not spec.get("enabled", False):
+            continue
+        list_url = compact_text(spec.get("list_url"))
+        link_css = compact_text(spec.get("link_css"))
+        source_label = compact_text(spec.get("source_label") or spec.get("id") or "html")
+        source = f"html_{source_label}"
+        if not list_url or not link_css:
+            continue
 
-    def __init__(
-        self, cfg: NewsIngestionConfig, *, html_specs: list[dict[str, Any]]
-    ) -> None:
-        self.cfg = cfg
-        self.html_specs = html_specs
+        wait_for_rate_limit(cfg.rate_limit_rpm)
 
-    def fetch(self) -> pd.DataFrame:
-        """Return a DataFrame with :data:`DISCOVERY_COLUMNS`."""
-        if not self.cfg.enable_html or not self.html_specs:
-            return empty_discovery_frame()
+        def _get() -> str:
+            r = requests.get(list_url, timeout=cfg.timeout_sec)
+            r.raise_for_status()
+            return r.text
 
-        rows: list[dict[str, Any]] = []
-        fetched_at = datetime.now(timezone.utc).isoformat()
-        max_per = max(1, self.cfg.max_articles_per_source)
-        session = requests.Session()
-        session.headers.update(
-            {
-                "User-Agent": "stock-pipeline-news/1.0 (research; +https://github.com/)",
-                "Accept": "text/html,application/xhtml+xml",
-            }
-        )
+        try:
+            html_text = call_with_retry(
+                _get,
+                max_attempts=cfg.api_retry_max_attempts,
+                base_delay_sec=cfg.api_retry_base_delay_sec,
+                label=f"html:{source_label}",
+            )
+        except Exception as ex:
+            LOGGER.warning("Failed HTML list %s: %s", list_url, ex)
+            continue
 
-        for spec in self.html_specs:
-            if not spec.get("enabled", False):
+        soup = BeautifulSoup(html_text, "html.parser")
+        anchors = soup.select(link_css)
+        for a in anchors[:max_per]:
+            href = compact_text(a.get("href"))
+            title = compact_text(a.get_text())
+            if not href or not title:
                 continue
-            list_url: str = str(spec.get("list_url") or "").strip()
-            link_css: str = str(spec.get("link_css") or "").strip()
-            source_label: str = str(
-                spec.get("source_label") or spec.get("id") or "html"
-            ).strip()
-            section: str = str(spec.get("section") or spec.get("id") or "").strip()
-            link_regex = spec.get("link_regex")
-            base_url: str = str(spec.get("base_url") or list_url).strip()
-
-            if not list_url or not link_css:
-                LOGGER.warning(
-                    "HtmlListAdapter: skip spec missing list_url or link_css: %s",
-                    spec.get("id"),
-                )
+            url = normalize_url(urljoin(list_url, href))
+            if not url:
                 continue
-
-            wait_for_rate_limit(self.cfg.rate_limit_rpm)
-
-            def _get() -> requests.Response:
-                wait_for_rate_limit(self.cfg.rate_limit_rpm)
-                return session.get(list_url, timeout=30)
-
-            try:
-                resp = call_with_retry(
-                    _get,
-                    max_attempts=self.cfg.api_retry_max_attempts,
-                    base_delay_sec=self.cfg.api_retry_base_delay_sec,
-                    label=f"html_list:{source_label}",
-                )
-                resp.raise_for_status()
-            except Exception as ex:
-                LOGGER.warning("HtmlListAdapter: GET %s failed: %s", list_url, ex)
-                continue
-
-            soup = BeautifulSoup(resp.text, "html.parser")
-            try:
-                anchors = soup.select(link_css)
-            except Exception as ex:
-                LOGGER.warning(
-                    "HtmlListAdapter: bad selector %r: %s", link_css, ex
-                )
-                continue
-
-            pat = re.compile(str(link_regex)) if link_regex else None
-            n = 0
-            for a in anchors:
-                if n >= max_per:
-                    break
-                href = a.get("href")
-                if not href:
-                    continue
-                raw_url = urljoin(list_url, str(href).strip())
-                curl = canonicalize_url(raw_url, base_url=base_url)
-                if not curl or not curl.startswith("http"):
-                    continue
-                if pat and not pat.search(curl):
-                    continue
-
-                title = compact_text(a.get_text())
-                source = source_label
-
-                rows.append(
-                    {
-                        "discovery_id": compute_discovery_id(
-                            curl, source, "", title
-                        ),
-                        "source": source,
-                        "source_type": "html_list",
-                        "section": section,
-                        "title": title,
-                        "summary": "",
-                        "url": raw_url,
-                        "canonical_url": curl,
-                        "published_at": None,
-                        "fetched_at": fetched_at,
-                        "language": "vi",
-                        "raw_ref": f"{list_url} | {curl}",
-                    }
-                )
-                n += 1
-
-            LOGGER.info(
-                "HtmlListAdapter [%s]: collected %d links from %s",
-                source_label,
-                n,
-                list_url,
+            article_id = compute_article_id(
+                url=url,
+                source=source,
+                published_at="",
+                ticker="",
+                title=title,
+            )
+            rows.append(
+                {
+                    "article_id": article_id,
+                    "source": source,
+                    "ticker": None,
+                    "title": title,
+                    "summary": "",
+                    "body_text": "",
+                    "url": url,
+                    "published_at": None,
+                    "fetched_at": fetched_at,
+                    "language": "vi",
+                    "raw_ref": safe_json_dumps(
+                        {
+                            "list_url": list_url,
+                            "href": href,
+                            "css": link_css,
+                            "source_label": source_label,
+                        }
+                    ),
+                }
             )
 
-        if not rows:
-            return empty_discovery_frame()
-        return pd.DataFrame(rows, columns=DISCOVERY_COLUMNS)
+    if not rows:
+        return empty_news_frame()
+    return dedupe_news(pd.DataFrame(rows, columns=NEWS_COLUMNS))

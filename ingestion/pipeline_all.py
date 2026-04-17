@@ -24,7 +24,6 @@ from ingestion.structure_data.pipeline import run_structure_ingestion_pipeline
 from ingestion.unstructured_data import (
     NewsIngestionConfig,
     ingest_news,
-    primary_news_display_path,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -65,7 +64,7 @@ def run_full_raw_pipeline(
             news_cfg.tickers = list(structure_cfg.tickers)
         news_paths = ingest_news(news_cfg)
         out["news_paths"] = news_paths
-        out["news_path"] = primary_news_display_path(news_paths)
+        out["news_path"] = news_paths.get("vnstock", {}).get("parquet", "")
 
     if delay_between_groups_sec > 0 and include_news and include_bctc:
         time.sleep(delay_between_groups_sec)
@@ -77,7 +76,7 @@ def run_full_raw_pipeline(
             bctc_cfg,
             refresh_listing=bctc_refresh_listing,
             structure_cfg=structure_cfg,
-            vnstock_api_key_env=news_cfg.vnstock_api_key_env,
+            vnstock_api_key_env="VNSTOCK_API_KEY",
         )
 
     return out
