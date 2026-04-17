@@ -2,7 +2,16 @@
 # Edit URLs as needed; respect site ToS / robots.txt.
 
 rss_feeds:
-  - https://vnexpress.net/rss/kinh-doanh.rss
+  - id: vnexpress
+    url: https://vnexpress.net/rss/kinh-doanh.rss
+  - id: cafef
+    url: https://cafef.vn/thi-truong-chung-khoan.rss
+  - id: vietstock_co_phieu
+    url: https://vietstock.vn/830/chung-khoan/co-phieu.rss
+  - id: vietstock_giao_dich_noi_bo
+    url: https://vietstock.vn/739/chung-khoan/giao-dich-noi-bo.rss
+  - id: vietstock_chinh_sach
+    url: https://vietstock.vn/143/chung-khoan/chinh-sach.rss
 
 
 html_sources:
@@ -20,19 +29,90 @@ html_sources:
       published_at_css: "span.date"
       author_css: "p.author_mail"
 
-  # CafeF template — JS-rendered, HTML may be empty.
-  - id: cafef_template
-    enabled: false
-    list_url: "https://cafef.vn/du-lieu.chn"
-    base_url: "https://cafef.vn"
-    link_css: "article h2 a"
-    source_label: "cafef"
-    section: "du-lieu"
+  - id: vnexpress_chung_khoan
+    enabled: true
+    list_url: "https://vnexpress.net/kinh-doanh/chung-khoan"
+    base_url: "https://vnexpress.net"
+    link_css: "article.item-news h3.title-news a"
+    source_label: "vnexpress"
+    section: "chung-khoan"
     detail:
-      title_css: "h1.title"
-      summary_css: "h2.sapo"
-      body_css: "div#mainContent p"
-      author_css: "p.author"
+      title_css: "h1.title-detail"
+      summary_css: "p.description"
+      body_css: "article.fck_detail p"
+      published_at_css: "span.date"
+      author_css: "p.author_mail"
+
+  - id: cafef_thi_truong_chung_khoan
+    enabled: true
+    list_url: "https://cafef.vn/thi-truong-chung-khoan.chn"
+    base_url: "https://cafef.vn"
+    link_css: "a[href$='.chn']"
+    source_label: "cafef"
+    section: "thi-truong-chung-khoan"
+    detail:
+      title_css: "h1.title, h1"
+      summary_css: "h2.sapo, h2"
+      body_css: "div#mainContent p, div#contentdetail p, article p"
+      published_at_css: "span.date, span.time, span.pdate, p.time"
+      author_css: "p.author, .author"
+
+  - id: vietstock_co_phieu_html
+    enabled: true
+    list_url: "https://vietstock.vn/830/chung-khoan/co-phieu"
+    base_url: "https://vietstock.vn"
+    headers:
+      Referer: "https://vietstock.vn/"
+      Origin: "https://vietstock.vn"
+      Upgrade-Insecure-Requests: "1"
+      Connection: "keep-alive"
+    link_css: "a[href$='.htm']"
+    source_label: "vietstock"
+    section: "co-phieu"
+    detail:
+      title_css: "h1.title, h1"
+      summary_css: ".news_sapo, .sapo, h2.lead, h2"
+      body_css: "div#contentdetail p, div#maincontent p, div#NewsContent p, article p"
+      published_at_css: "span.time, span.date, p.time, .date"
+      author_css: "p.author, .author"
+
+  - id: vietstock_giao_dich_noi_bo_html
+    enabled: true
+    list_url: "https://vietstock.vn/739/chung-khoan/giao-dich-noi-bo"
+    base_url: "https://vietstock.vn"
+    headers:
+      Referer: "https://vietstock.vn/"
+      Origin: "https://vietstock.vn"
+      Upgrade-Insecure-Requests: "1"
+      Connection: "keep-alive"
+    link_css: "a[href$='.htm']"
+    source_label: "vietstock"
+    section: "giao-dich-noi-bo"
+    detail:
+      title_css: "h1.title, h1"
+      summary_css: ".news_sapo, .sapo, h2.lead, h2"
+      body_css: "div#contentdetail p, div#maincontent p, div#NewsContent p, article p"
+      published_at_css: "span.time, span.date, p.time, .date"
+      author_css: "p.author, .author"
+
+  - id: vietstock_chinh_sach_html
+    enabled: true
+    list_url: "https://vietstock.vn/143/chung-khoan/chinh-sach"
+    base_url: "https://vietstock.vn"
+    headers:
+      Referer: "https://vietstock.vn/"
+      Origin: "https://vietstock.vn"
+      Upgrade-Insecure-Requests: "1"
+      Connection: "keep-alive"
+    link_css: "a[href$='.htm']"
+    source_label: "vietstock"
+    section: "chinh-sach"
+    detail:
+      title_css: "h1.title, h1"
+      summary_css: ".news_sapo, .sapo, h2.lead, h2"
+      body_css: "div#contentdetail p, div#maincontent p, div#NewsContent p, article p"
+      published_at_css: "span.time, span.date, p.time, .date"
+      author_css: "p.author, .author"
 
   - id: example_placeholder
     enabled: false

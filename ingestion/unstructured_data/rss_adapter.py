@@ -15,10 +15,12 @@ from ingestion.common import call_with_retry, wait_for_rate_limit
 from .config import NewsIngestionConfig
 from .schema import (
     NEWS_COLUMNS,
+    build_ticker_regex,
     compact_text,
     compute_article_id,
     dedupe_news,
     empty_news_frame,
+    infer_ticker,
     normalize_url,
     parse_datetime_to_iso_utc,
     safe_json_dumps,
@@ -33,18 +35,35 @@ def _source_from_feed(url: str) -> str:
     return f"rss_{host}"
 
 
-def fetch_rss_news(cfg: NewsIngestionConfig, feed_urls: list[str]) -> pd.DataFrame:
-    if not feed_urls:
+def _label_source(label: str | None, url: str) -> str:
+    if label:
+        cleaned = compact_text(label).lower().replace(" ", "_")
+        if cleaned:
+            return f"{cleaned}_rss"
+    return _source_from_feed(url)
+
+
+def fetch_rss_news(cfg: NewsIngestionConfig, feed_specs: list[dict[str, str]]) -> pd.DataFrame:
+    if not feed_specs:
         return empty_news_frame()
     fetched_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     rows: list[dict[str, str | None]] = []
     max_per = max(1, int(cfg.max_articles_per_source))
 
-    for feed_url in feed_urls:
+    ticker_re = (
+        build_ticker_regex(cfg.resolved_tickers()) if cfg.enable_ticker_match else None
+    )
+    session = requests.Session()
+    session.headers.update(cfg.http_headers)
+
+    for spec in feed_specs:
+        feed_url = str(spec.get("url", "")).strip()
+        if not feed_url:
+            continue
         wait_for_rate_limit(cfg.rate_limit_rpm)
 
         def _get() -> str:
-            r = requests.get(feed_url, timeout=cfg.timeout_sec)
+            r = session.get(feed_url, timeout=cfg.timeout_sec)
             r.raise_for_status()
             return r.text
 
@@ -60,7 +79,7 @@ def fetch_rss_news(cfg: NewsIngestionConfig, feed_urls: list[str]) -> pd.DataFra
             LOGGER.warning("Failed RSS feed %s: %s", feed_url, ex)
             continue
 
-        source = _source_from_feed(feed_url)
+        source = _label_source(spec.get("label"), feed_url)
         entries = list(getattr(parsed, "entries", []) or [])[:max_per]
         for entry in entries:
             title = compact_text(getattr(entry, "title", ""))
@@ -70,24 +89,32 @@ def fetch_rss_news(cfg: NewsIngestionConfig, feed_urls: list[str]) -> pd.DataFra
             summary = strip_html(
                 getattr(entry, "summary", "") or getattr(entry, "description", "")
             )
+            content_value = ""
+            content = getattr(entry, "content", None) or []
+            if content:
+                content_value = strip_html(content[0].get("value", ""))
             published_at = parse_datetime_to_iso_utc(
-                getattr(entry, "published", "") or getattr(entry, "updated", "")
+                getattr(entry, "published_parsed", None)
+                or getattr(entry, "updated_parsed", None)
+                or getattr(entry, "published", "")
+                or getattr(entry, "updated", "")
             )
+            ticker = infer_ticker([title, summary, content_value], ticker_re)
             article_id = compute_article_id(
                 url=url,
                 source=source,
                 published_at=published_at or "",
-                ticker="",
+                ticker=ticker or "",
                 title=title,
             )
             rows.append(
                 {
                     "article_id": article_id,
                     "source": source,
-                    "ticker": None,
+                    "ticker": ticker,
                     "title": title,
                     "summary": summary,
-                    "body_text": "",
+                    "body_text": content_value or "",
                     "url": url,
                     "published_at": published_at,
                     "fetched_at": fetched_at,

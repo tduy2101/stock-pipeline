@@ -4,7 +4,7 @@ import hashlib
 import json
 import logging
 import re
-from datetime import timezone
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -86,6 +86,29 @@ def normalize_url(url: Any) -> str:
 def parse_datetime_to_iso_utc(value: Any) -> str | None:
     if value is None:
         return None
+    if isinstance(value, datetime):
+        ts = value
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        else:
+            ts = ts.astimezone(timezone.utc)
+        return ts.isoformat().replace("+00:00", "Z")
+    if hasattr(value, "tm_year"):
+        try:
+            ts = datetime(*value[:6], tzinfo=timezone.utc)
+            return ts.isoformat().replace("+00:00", "Z")
+        except Exception:
+            pass
+    if isinstance(value, (int, float)):
+        try:
+            if pd.isna(value):
+                return None
+        except (TypeError, ValueError):
+            pass
+        unit = "ms" if abs(float(value)) > 10_000_000_000 else "s"
+        ts = pd.to_datetime(value, errors="coerce", utc=True, unit=unit)
+        if not pd.isna(ts):
+            return ts.tz_convert(timezone.utc).isoformat().replace("+00:00", "Z")
     text = compact_text(value)
     if not text:
         return None
@@ -103,16 +126,48 @@ def compute_article_id(
     ticker: str | None,
     title: str,
 ) -> str:
-    payload = "\n".join(
-        [
-            normalize_url(url),
-            compact_text(source),
-            compact_text(published_at),
-            compact_text(ticker),
-            compact_text(title),
-        ]
-    )
+    norm_url = normalize_url(url)
+    if norm_url:
+        payload = norm_url
+    else:
+        payload = "\n".join(
+            [
+                compact_text(source),
+                compact_text(published_at),
+                compact_text(ticker),
+                compact_text(title),
+            ]
+        )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def build_ticker_regex(tickers: list[str]) -> re.Pattern | None:
+    cleaned: list[str] = []
+    for t in tickers:
+        text = compact_text(t).upper()
+        if not text or text in {"NAN", "NONE", "<NA>"}:
+            continue
+        if len(text) < 2:
+            continue
+        cleaned.append(text)
+    if not cleaned:
+        return None
+    cleaned = sorted(set(cleaned), key=len, reverse=True)
+    pattern = r"(?<![A-Z0-9])(" + "|".join(map(re.escape, cleaned)) + r")(?![A-Z0-9])"
+    return re.compile(pattern)
+
+
+def infer_ticker(texts: list[Any], regex: re.Pattern | None) -> str | None:
+    if regex is None:
+        return None
+    for text in texts:
+        raw = compact_text(text).upper()
+        if not raw:
+            continue
+        match = regex.search(raw)
+        if match:
+            return match.group(1)
+    return None
 
 
 def safe_json_dumps(data: Any) -> str:
