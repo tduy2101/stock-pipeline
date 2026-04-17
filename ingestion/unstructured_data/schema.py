@@ -76,8 +76,13 @@ def normalize_url(url: Any) -> str:
         path = parsed.path or ""
         if path != "/" and path.endswith("/"):
             path = path.rstrip("/")
-        query_items = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if not k.startswith("utm_")]
-        query = urlencode(query_items)
+        query_items = [
+            (k, v)
+            for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+            if not k.lower().startswith("utm_")
+        ]
+        query_items = sorted(query_items, key=lambda item: (item[0], item[1]))
+        query = urlencode(query_items, doseq=True)
         return urlunparse((scheme, host, path, "", query, ""))
     except Exception:
         return raw

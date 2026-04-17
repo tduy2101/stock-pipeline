@@ -56,7 +56,8 @@ def fetch_html_list_news(
         return empty_news_frame()
     fetched_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     rows: list[dict[str, str | None]] = []
-    max_per = max(1, int(cfg.max_articles_per_source))
+    max_per = int(getattr(cfg, "html_max_per_source", 0) or cfg.max_articles_per_source)
+    max_per = max(1, max_per)
 
     ticker_re = (
         build_ticker_regex(cfg.resolved_tickers()) if cfg.enable_ticker_match else None
@@ -65,7 +66,7 @@ def fetch_html_list_news(
     session.headers.update(cfg.http_headers)
 
     for spec in html_specs:
-        if not spec.get("enabled", False):
+        if spec.get("enabled", True) is False:
             continue
         list_url = compact_text(spec.get("list_url"))
         link_css = compact_text(spec.get("link_css"))
@@ -106,7 +107,14 @@ def fetch_html_list_news(
 
         soup = BeautifulSoup(html_text, "html.parser")
         anchors = soup.select(link_css)
+        LOGGER.info(
+            "HTML list %s: links_found=%d (take<=%d)",
+            list_url,
+            len(anchors),
+            max_per,
+        )
         detail_cfg = spec.get("detail") or {}
+        detail_success = 0
         for a in anchors[:max_per]:
             href = compact_text(a.get("href"))
             title = compact_text(a.get_text())
@@ -144,6 +152,7 @@ def fetch_html_list_news(
                     summary = strip_html(detail_summary)
                     body_text = strip_html(detail_body)
                     published_at = parse_datetime_to_iso_utc(detail_published)
+                    detail_success += 1
                 except Exception as ex:
                     LOGGER.debug("Failed HTML detail %s: %s", url, ex)
             ticker = infer_ticker([title, summary, body_text], ticker_re)
@@ -176,6 +185,14 @@ def fetch_html_list_news(
                         }
                     ),
                 }
+            )
+
+        if detail_cfg:
+            LOGGER.info(
+                "HTML list %s: detail_success=%d/%d",
+                list_url,
+                detail_success,
+                min(len(anchors), max_per),
             )
 
     if not rows:

@@ -14,7 +14,7 @@ class NewsIngestionConfig:
     use_listing_tickers: bool = False
     listing_parquet_path: Path | None = None
     listing_exchange_filter: list[str] | None = None
-    max_tickers_per_run: int = 50
+    max_tickers_per_run: int = 5000
 
     rss_feed_urls: list[str] = field(default_factory=list)
     sources_yaml_path: Path | None = None
@@ -22,13 +22,17 @@ class NewsIngestionConfig:
     enable_vnstock: bool = True
     enable_rss: bool = True
     enable_html: bool = True
+    prefer_rss_html: bool = True
 
     days_back: int = 1
-    days_back_vnstock: int | None = 500
+    days_back_vnstock: int | None = 1000
     days_back_rss: int | None = 1
     days_back_html: int | None = 1
+    strict_published_at_days_back: bool = False
     rate_limit_rpm: int = 20
     max_articles_per_source: int = 200
+    rss_max_per_feed: int = 200
+    html_max_per_source: int = 200
 
     append_only: bool = True
     truncate_partition: bool = True
@@ -38,10 +42,23 @@ class NewsIngestionConfig:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
     )
+    http_headers: dict[str, str] = field(default_factory=dict)
 
     api_retry_max_attempts: int = 4
     api_retry_base_delay_sec: float = 1.5
     timeout_sec: int = 30
+
+    def __post_init__(self) -> None:
+        base_headers = {
+            "User-Agent": self.http_user_agent,
+            "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
+        extra_headers = self.http_headers if isinstance(self.http_headers, dict) else {}
+        merged = {
+            **base_headers,
+            **{str(k): str(v) for k, v in extra_headers.items() if v is not None},
+        }
+        self.http_headers = merged
 
     @property
     def run_date(self) -> str:
@@ -59,15 +76,6 @@ class NewsIngestionConfig:
     @property
     def news_root(self) -> Path:
         return self.data_lake_root / "news"
-
-    @property
-    def http_headers(self) -> dict[str, str]:
-        return {
-            "User-Agent": self.http_user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "vi,en-US;q=0.9,en;q=0.8",
-            "Cache-Control": "no-cache",
-        }
 
     def resolved_sources_yaml(self) -> Path:
         if self.sources_yaml_path is not None:

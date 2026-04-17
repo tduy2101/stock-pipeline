@@ -2,16 +2,65 @@
 # Edit URLs as needed; respect site ToS / robots.txt.
 
 rss_feeds:
-  - id: vnexpress
+  - id: vnexpress_kinh_doanh
     url: https://vnexpress.net/rss/kinh-doanh.rss
-  - id: cafef
-    url: https://cafef.vn/thi-truong-chung-khoan.rss
+
+  # CafeF
+  # index.rss is a feed-directory page; use home.rss for actual entries.
+  - id: cafef_index
+    url: https://cafef.vn/home.rss
+  - id: cafef_xa_hoi
+    url: https://cafef.vn/xa-hoi.rss
+  - id: cafef_bat_dong_san
+    url: https://cafef.vn/bat-dong-san.rss
+  - id: cafef_doanh_nghiep
+    url: https://cafef.vn/doanh-nghiep.rss
+  - id: cafef_tai_chinh_ngan_hang
+    url: https://cafef.vn/tai-chinh-ngan-hang.rss
+  - id: cafef_tai_chinh_quoc_te
+    url: https://cafef.vn/tai-chinh-quoc-te.rss
+  - id: cafef_smart_money
+    url: https://cafef.vn/smart-money.rss
+  - id: cafef_kinh_te_so
+    url: https://cafef.vn/kinh-te-so.rss
+  - id: cafef_thi_truong
+    url: https://cafef.vn/thi-truong.rss
+  - id: cafef_song
+    url: https://cafef.vn/song.rss
+  - id: cafef_lifestyle
+    url: https://cafef.vn/lifestyle.rss
+  - id: cafef_hoi_nghi_hoi_thao
+    url: https://cafef.vn/hoi-nghi-hoi-thao.rss
+  - id: cafef_doanh_nghiep_gioi_thieu
+    url: https://cafef.vn/doanh-nghiep-gioi-thieu.rss
+
+  # Vietstock
   - id: vietstock_co_phieu
     url: https://vietstock.vn/830/chung-khoan/co-phieu.rss
   - id: vietstock_giao_dich_noi_bo
     url: https://vietstock.vn/739/chung-khoan/giao-dich-noi-bo.rss
+  - id: vietstock_niem_yet
+    url: https://vietstock.vn/741/chung-khoan/niem-yet.rss
+  - id: vietstock_etf_va_cac_quy
+    url: https://vietstock.vn/3358/chung-khoan/etf-va-cac-quy.rss
+  - id: vietstock_chung_khoan_phai_sinh
+    url: https://vietstock.vn/4186/chung-khoan/chung-khoan-phai-sinh.rss
+  - id: vietstock_chung_quyen
+    url: https://vietstock.vn/4308/chung-khoan/chung-quyen.rss
+  - id: vietstock_y_kien_chuyen_gia
+    url: https://vietstock.vn/145/chung-khoan/y-kien-chuyen-gia.rss
+  - id: vietstock_cau_chuyen_dau_tu
+    url: https://vietstock.vn/3355/chung-khoan/cau-chuyen-dau-tu.rss
   - id: vietstock_chinh_sach
     url: https://vietstock.vn/143/chung-khoan/chinh-sach.rss
+  - id: vietstock_thi_truong_trai_phieu
+    url: https://vietstock.vn/785/chung-khoan/thi-truong-trai-phieu.rss
+  - id: vietstock_hoat_dong_kinh_doanh
+    url: https://vietstock.vn/737/doanh-nghiep/hoat-dong-kinh-doanh.rss
+  - id: vietstock_co_tuc
+    url: https://vietstock.vn/738/doanh-nghiep/co-tuc.rss
+  - id: vietstock_tang_von_ma
+    url: https://vietstock.vn/764/doanh-nghiep/tang-von-m-a.rss
 
 
 html_sources:
@@ -43,11 +92,13 @@ html_sources:
       published_at_css: "span.date"
       author_css: "p.author_mail"
 
+  # CafeF HTML list is kept enabled. If server returns JS-only blocks for some runs,
+  # RSS feeds above are the fallback primary source.
   - id: cafef_thi_truong_chung_khoan
     enabled: true
     list_url: "https://cafef.vn/thi-truong-chung-khoan.chn"
     base_url: "https://cafef.vn"
-    link_css: "a[href$='.chn']"
+    link_css: "h3 a[href$='.chn'], a[href$='.chn']"
     source_label: "cafef"
     section: "thi-truong-chung-khoan"
     detail:
@@ -58,7 +109,9 @@ html_sources:
       author_css: "p.author, .author"
 
   - id: vietstock_co_phieu_html
-    enabled: true
+    # Vietstock list pages are frequently blocked/404 in server-side crawl.
+    # Prefer Vietstock RSS feeds above for stable ingestion.
+    enabled: false
     list_url: "https://vietstock.vn/830/chung-khoan/co-phieu"
     base_url: "https://vietstock.vn"
     headers:
@@ -77,7 +130,7 @@ html_sources:
       author_css: "p.author, .author"
 
   - id: vietstock_giao_dich_noi_bo_html
-    enabled: true
+    enabled: false
     list_url: "https://vietstock.vn/739/chung-khoan/giao-dich-noi-bo"
     base_url: "https://vietstock.vn"
     headers:
@@ -96,7 +149,7 @@ html_sources:
       author_css: "p.author, .author"
 
   - id: vietstock_chinh_sach_html
-    enabled: true
+    enabled: false
     list_url: "https://vietstock.vn/143/chung-khoan/chinh-sach"
     base_url: "https://vietstock.vn"
     headers:

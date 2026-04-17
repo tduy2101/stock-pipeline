@@ -43,12 +43,44 @@ def _label_source(label: str | None, url: str) -> str:
     return _source_from_feed(url)
 
 
+def _entry_value(entry: object, *keys: str) -> object | None:
+    for key in keys:
+        val = getattr(entry, key, None)
+        if val not in (None, ""):
+            return val
+        if isinstance(entry, dict):
+            val = entry.get(key)
+            if val not in (None, ""):
+                return val
+    return None
+
+
+def _entry_published_at(entry: object) -> str | None:
+    return parse_datetime_to_iso_utc(
+        _entry_value(
+            entry,
+            "published_parsed",
+            "updated_parsed",
+            "created_parsed",
+            "dc_date",
+            "date",
+            "published",
+            "updated",
+            "created",
+            "pubdate",
+            "issued",
+            "modified",
+        )
+    )
+
+
 def fetch_rss_news(cfg: NewsIngestionConfig, feed_specs: list[dict[str, str]]) -> pd.DataFrame:
     if not feed_specs:
         return empty_news_frame()
     fetched_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     rows: list[dict[str, str | None]] = []
-    max_per = max(1, int(cfg.max_articles_per_source))
+    max_per = int(getattr(cfg, "rss_max_per_feed", 0) or cfg.max_articles_per_source)
+    max_per = max(1, max_per)
 
     ticker_re = (
         build_ticker_regex(cfg.resolved_tickers()) if cfg.enable_ticker_match else None
@@ -63,7 +95,7 @@ def fetch_rss_news(cfg: NewsIngestionConfig, feed_specs: list[dict[str, str]]) -
         wait_for_rate_limit(cfg.rate_limit_rpm)
 
         def _get() -> str:
-            r = session.get(feed_url, timeout=cfg.timeout_sec)
+            r = session.get(feed_url, timeout=cfg.timeout_sec, headers=cfg.http_headers)
             r.raise_for_status()
             return r.text
 
@@ -80,7 +112,14 @@ def fetch_rss_news(cfg: NewsIngestionConfig, feed_specs: list[dict[str, str]]) -
             continue
 
         source = _label_source(spec.get("label"), feed_url)
-        entries = list(getattr(parsed, "entries", []) or [])[:max_per]
+        entries_all = list(getattr(parsed, "entries", []) or [])
+        LOGGER.info(
+            "RSS feed %s: parsed_entries=%d (take<=%d)",
+            feed_url,
+            len(entries_all),
+            max_per,
+        )
+        entries = entries_all[:max_per]
         for entry in entries:
             title = compact_text(getattr(entry, "title", ""))
             url = normalize_url(getattr(entry, "link", ""))
@@ -93,12 +132,7 @@ def fetch_rss_news(cfg: NewsIngestionConfig, feed_specs: list[dict[str, str]]) -
             content = getattr(entry, "content", None) or []
             if content:
                 content_value = strip_html(content[0].get("value", ""))
-            published_at = parse_datetime_to_iso_utc(
-                getattr(entry, "published_parsed", None)
-                or getattr(entry, "updated_parsed", None)
-                or getattr(entry, "published", "")
-                or getattr(entry, "updated", "")
-            )
+            published_at = _entry_published_at(entry)
             ticker = infer_ticker([title, summary, content_value], ticker_re)
             article_id = compute_article_id(
                 url=url,
