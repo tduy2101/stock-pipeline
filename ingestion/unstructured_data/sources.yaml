@@ -4,6 +4,8 @@
 rss_feeds:
   - id: vnexpress_kinh_doanh
     url: https://vnexpress.net/rss/kinh-doanh.rss
+  - id: vnexpress_chung_khoan
+    url: https://vnexpress.net/rss/kinh-doanh/chung-khoan.rss
 
   # CafeF
   # index.rss is a feed-directory page; use home.rss for actual entries.
@@ -166,9 +168,3 @@ html_sources:
       body_css: "div#contentdetail p, div#maincontent p, div#NewsContent p, article p"
       published_at_css: "span.time, span.date, p.time, .date"
       author_css: "p.author, .author"
-
-  - id: example_placeholder
-    enabled: false
-    list_url: "https://example.com/news-list"
-    link_css: "a.article-title"
-    source_label: "example"

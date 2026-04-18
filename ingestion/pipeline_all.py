@@ -2,7 +2,7 @@
 pipeline_all.py  —  Duy nhất 1 file .py chạy toàn bộ 3 luồng lấy dữ liệu raw.
 
     1) Có cấu trúc   (Structure_Data)      — giá, index, listing, company, …
-    2) Phi cấu trúc   (Unstructure_Data)    — tin tức vnstock / RSS / HTML
+    2) Phi cấu trúc   (Unstructure_Data)    — tin tức RSS / HTML
     3) Bán cấu trúc   (Semi_Structure_Data) — BCTC PDF qua discovery VCI
 
 Chạy từ root repo:
@@ -64,7 +64,10 @@ def run_full_raw_pipeline(
             news_cfg.tickers = list(structure_cfg.tickers)
         news_paths = ingest_news(news_cfg)
         out["news_paths"] = news_paths
-        out["news_path"] = news_paths.get("vnstock", {}).get("parquet", "")
+        out["news_path"] = (
+            news_paths.get("rss", {}).get("parquet", "")
+            or news_paths.get("html", {}).get("parquet", "")
+        )
 
     if delay_between_groups_sec > 0 and include_news and include_bctc:
         time.sleep(delay_between_groups_sec)
@@ -104,7 +107,6 @@ def _cli() -> None:
         listing_exchange_filter=["HSX", "HNX"],
         max_tickers_per_run=args.max_tickers,
         days_back=0,
-        enable_vnstock=True,
         enable_rss=True,
         enable_html=True,
     )

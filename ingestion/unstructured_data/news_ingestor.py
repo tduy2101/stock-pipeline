@@ -80,22 +80,29 @@ def _filter_days_back(
     *,
     strict: bool = False,
 ) -> pd.DataFrame:
-    if df.empty or days_back <= 0:
+    if df.empty:
         return df
     if "published_at" not in df.columns:
         return empty_news_frame() if strict else df
+
     dt = pd.to_datetime(df["published_at"], errors="coerce", utc=True)
-    cutoff = pd.Timestamp.utcnow() - pd.Timedelta(days=days_back)
     if strict:
-        keep = dt >= cutoff
-    else:
-        keep = dt.isna() | (dt >= cutoff)
+        keep = dt.notna()
+        if days_back > 0:
+            cutoff = pd.Timestamp.utcnow() - pd.Timedelta(days=days_back)
+            keep = keep & (dt >= cutoff)
+        return df.loc[keep].copy()
+
+    if days_back <= 0:
+        return df
+
+    cutoff = pd.Timestamp.utcnow() - pd.Timedelta(days=days_back)
+    keep = dt.isna() | (dt >= cutoff)
     return df.loc[keep].copy()
 
 
 def _resolve_days_back(cfg: NewsIngestionConfig, category: str) -> int:
     per_source = {
-        "vnstock": cfg.days_back_vnstock,
         "rss": cfg.days_back_rss,
         "html": cfg.days_back_html,
     }.get(category)
@@ -127,7 +134,6 @@ def save_news(
             except FileNotFoundError:
                 pass
     parquet_path = out_dir / "PART-000.parquet"
-    csv_path = out_dir / "PART-000.csv"
 
     if append_only:
         LOGGER.debug(
@@ -141,14 +147,7 @@ def save_news(
             out[col] = pd.to_datetime(out[col], errors="coerce", utc=True)
     out.to_parquet(parquet_path, index=False)
 
-    csv_df = out.copy()
-    for col in ("published_at", "fetched_at"):
-        if col in csv_df.columns:
-            csv_df[col] = csv_df[col].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            csv_df[col] = csv_df[col].fillna("")
-    csv_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-
-    return {"parquet": str(parquet_path), "csv": str(csv_path)}
+    return {"parquet": str(parquet_path)}
 
 
 def ingest_news(cfg: NewsIngestionConfig | None = None) -> dict[str, dict[str, str] | dict[str, int]]:
@@ -156,43 +155,19 @@ def ingest_news(cfg: NewsIngestionConfig | None = None) -> dict[str, dict[str, s
     yaml_rss, html_specs = _load_sources_yaml(cfg.resolved_sources_yaml())
     rss_specs = _merge_rss_specs(cfg.rss_feed_urls, yaml_rss)
 
-    vnstock_df = empty_news_frame()
-    rss_df = empty_news_frame()
-    html_df = empty_news_frame()
+    LOGGER.info("ingest_news mode: RSS+HTML only")
 
-    if cfg.prefer_rss_html:
-        if cfg.enable_vnstock:
-            LOGGER.info("ingest_news: prefer_rss_html=True (vnstock treated as best-effort source)")
-        else:
-            LOGGER.info("ingest_news: prefer_rss_html=True (RSS+HTML focus mode)")
-
-    if cfg.enable_vnstock:
-        try:
-            from .vnstock_news_adapter import fetch_vnstock_news
-
-            vnstock_df = fetch_vnstock_news(cfg)
-        except Exception as ex:
-            LOGGER.warning(
-                "ingest_news[vnstock] best-effort fallback: ex_type=%s ex=%s",
-                type(ex).__name__,
-                ex,
-            )
-            vnstock_df = empty_news_frame()
-    if cfg.enable_rss:
-        rss_df = fetch_rss_news(cfg, rss_specs)
-    if cfg.enable_html:
-        html_df = fetch_html_list_news(cfg, html_specs)
+    rss_df = fetch_rss_news(cfg, rss_specs) if cfg.enable_rss else empty_news_frame()
+    html_df = fetch_html_list_news(cfg, html_specs) if cfg.enable_html else empty_news_frame()
 
     per_source: dict[str, pd.DataFrame] = {}
-    if cfg.enable_vnstock:
-        per_source["vnstock"] = vnstock_df
     if cfg.enable_rss:
         per_source["rss"] = rss_df
     if cfg.enable_html:
         per_source["html"] = html_df
 
     if not per_source:
-        LOGGER.warning("ingest_news: no source enabled")
+        LOGGER.warning("ingest_news: no RSS/HTML source enabled")
         return {"row_counts": {}}
 
     output: dict[str, dict[str, str] | dict[str, int]] = {"row_counts": {}}

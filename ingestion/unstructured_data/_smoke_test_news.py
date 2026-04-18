@@ -43,13 +43,10 @@ def main() -> int:
         rss_max_per_feed=200,
         html_max_per_source=200,
         days_back=7,
-        days_back_vnstock=0,
         days_back_rss=7,
         days_back_html=7,
         strict_published_at_days_back=False,
-        prefer_rss_html=True,
         rate_limit_rpm=rate_limit,
-        enable_vnstock=False,
         enable_rss=True,
         enable_html=True,
         enable_ticker_match=True,
@@ -63,10 +60,8 @@ def main() -> int:
     print(f"sources_yaml: {cfg.resolved_sources_yaml()}")
     print(f"tickers: {len(cfg.resolved_tickers())}")
     print(
-        "focus_mode: "
-        f"vnstock_enabled={cfg.enable_vnstock} "
-        f"rss_enabled={cfg.enable_rss} "
-        f"html_enabled={cfg.enable_html}"
+        "focus_mode: RSS+HTML only "
+        f"(rss_enabled={cfg.enable_rss} html_enabled={cfg.enable_html})"
     )
 
     news_paths = ingest_news(cfg)
@@ -81,19 +76,14 @@ def main() -> int:
     for source in ["rss", "html"]:
         info = news_paths.get(source, {})
         parquet_raw = info.get("parquet", "")
-        csv_raw = info.get("csv", "")
 
         parquet_path = Path(parquet_raw) if parquet_raw else None
-        csv_path = Path(csv_raw) if csv_raw else None
 
         parquet_ok = bool(parquet_path and parquet_path.is_file())
-        csv_ok = bool(csv_path and csv_path.is_file())
 
-        print(f"{source}: parquet_ok={parquet_ok} csv_ok={csv_ok}")
+        print(f"{source}: parquet_ok={parquet_ok}")
         if parquet_path:
             print(f"  parquet: {parquet_path}")
-        if csv_path:
-            print(f"  csv    : {csv_path}")
 
         if not parquet_ok:
             failed_sources.append(source)
@@ -122,7 +112,7 @@ def main() -> int:
         print(f"\nFAILED SOURCES: {failed_sources}")
         return 1
 
-    print("\nAll configured sources (rss, html) produced output files (parquet + csv).")
+    print("\nAll configured sources (rss, html) produced output files (parquet).")
     return 0
 
 

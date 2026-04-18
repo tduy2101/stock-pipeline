@@ -10,7 +10,9 @@ import pandas as pd
 
 @dataclass
 class NewsIngestionConfig:
+    # Kept for backward compatibility and ticker enrichment/matching in RSS+HTML mode.
     tickers: list[str] = field(default_factory=list)
+    # Kept for backward compatibility; now used to source candidate tickers for infer_ticker.
     use_listing_tickers: bool = False
     listing_parquet_path: Path | None = None
     listing_exchange_filter: list[str] | None = None
@@ -19,13 +21,10 @@ class NewsIngestionConfig:
     rss_feed_urls: list[str] = field(default_factory=list)
     sources_yaml_path: Path | None = None
 
-    enable_vnstock: bool = True
     enable_rss: bool = True
     enable_html: bool = True
-    prefer_rss_html: bool = True
 
     days_back: int = 1
-    days_back_vnstock: int | None = 1000
     days_back_rss: int | None = 1
     days_back_html: int | None = 1
     strict_published_at_days_back: bool = False

@@ -65,11 +65,15 @@ def _entry_published_at(entry: object) -> str | None:
             "dc_date",
             "date",
             "published",
+            "published_at",
+            "pubDate",
             "updated",
             "created",
             "pubdate",
             "issued",
             "modified",
+            "isoDate",
+            "timestamp",
         )
     )
 
@@ -113,25 +117,28 @@ def fetch_rss_news(cfg: NewsIngestionConfig, feed_specs: list[dict[str, str]]) -
 
         source = _label_source(spec.get("label"), feed_url)
         entries_all = list(getattr(parsed, "entries", []) or [])
-        LOGGER.info(
-            "RSS feed %s: parsed_entries=%d (take<=%d)",
-            feed_url,
-            len(entries_all),
-            max_per,
-        )
         entries = entries_all[:max_per]
+        rows_before = len(rows)
         for entry in entries:
-            title = compact_text(getattr(entry, "title", ""))
-            url = normalize_url(getattr(entry, "link", ""))
+            title = compact_text(_entry_value(entry, "title", "headline", "name"))
+            url = normalize_url(_entry_value(entry, "link", "url", "id"))
             if not title or not url:
                 continue
             summary = strip_html(
-                getattr(entry, "summary", "") or getattr(entry, "description", "")
+                _entry_value(entry, "summary", "description", "subtitle") or ""
             )
             content_value = ""
-            content = getattr(entry, "content", None) or []
-            if content:
-                content_value = strip_html(content[0].get("value", ""))
+            content = _entry_value(entry, "content")
+            if isinstance(content, list):
+                chunks: list[str] = []
+                for item in content:
+                    if isinstance(item, dict):
+                        chunks.append(strip_html(item.get("value", "")))
+                    else:
+                        chunks.append(strip_html(item))
+                content_value = compact_text(" ".join(x for x in chunks if x))
+            elif content:
+                content_value = strip_html(content)
             published_at = _entry_published_at(entry)
             ticker = infer_ticker([title, summary, content_value], ticker_re)
             article_id = compute_article_id(
@@ -156,6 +163,14 @@ def fetch_rss_news(cfg: NewsIngestionConfig, feed_specs: list[dict[str, str]]) -
                     "raw_ref": safe_json_dumps(dict(entry)),
                 }
             )
+        rows_added = len(rows) - rows_before
+        LOGGER.info(
+            "RSS feed=%s entries_found=%d rows_added=%d take<=%d",
+            feed_url,
+            len(entries_all),
+            rows_added,
+            max_per,
+        )
 
     if not rows:
         return empty_news_frame()

@@ -21,13 +21,12 @@ ingestion/
 │   └── stock_info_ingestor.py # listing, company overview, financial ratio, price board
 ├── unstructured_data/         # Tin tức
 │   ├── config.py              # NewsIngestionConfig
-│   ├── news_ingestor.py       # ingest_news() — điều phối 3 adapter
-│   ├── vnstock_news_adapter.py
+│   ├── news_ingestor.py       # ingest_news() — điều phối RSS + HTML
 │   ├── rss_adapter.py
 │   ├── html_list_adapter.py
-│   ├── news_schema.py         # schema Parquet, finalize, lọc theo ngày
+│   ├── schema.py              # schema Parquet, normalize/dedupe/validate
 │   ├── sources.yaml           # RSS + HTML list (VnExpress, …)
-│   └── sources_loader.py
+│   └── validate.py
 ├── semi_structure_data/       # BCTC PDF
 │   ├── config.py              # BctcPdfConfig
 │   ├── bctc_ingestor.py       # ingest_bctc_pdfs()
@@ -62,12 +61,12 @@ ingestion/
 
 | Thành phần | Đường dẫn | Ghi chú |
 |-------------|-----------|---------|
-| Tin vnstock | `Unstructure_Data/news/vnstock/date=<YYYY-MM-DD>/PART-000.parquet` | Khi `split_news_output_by_source=True` (mặc định) |
 | Tin RSS | `Unstructure_Data/news/rss/date=<YYYY-MM-DD>/PART-000.parquet` | |
 | Tin HTML list | `Unstructure_Data/news/html/date=<YYYY-MM-DD>/PART-000.parquet` | Khi `enable_html=True` và có spec `enabled` trong `sources.yaml` |
-| Gộp một file | `Unstructure_Data/news/items/date=<YYYY-MM-DD>/PART-000.parquet` | Khi `split_news_output_by_source=False` |
 
-**Cột chuẩn (Parquet):** xem `news_schema.NEWS_COLUMNS` — `article_id`, `source`, `ticker`, `title`, `summary`, `body_text`, `url`, `published_at`, `fetched_at`, `language`, `raw_ref`.
+**Cột chuẩn (Parquet):** xem `schema.NEWS_COLUMNS` — `article_id`, `source`, `ticker`, `title`, `summary`, `body_text`, `url`, `published_at`, `fetched_at`, `language`, `raw_ref`.
+
+**Lưu ý ghi file:** luồng news hiện tại chỉ ghi **Parquet** (`PART-000.parquet`), không ghi CSV. Khi `truncate_partition=True`, ingestor dọn `PART-*.parquet` và cả CSV legacy `PART-*.csv` trong partition trước khi ghi mới.
 
 **Gốc logic:** `NewsIngestionConfig.data_lake_root` → `…/data-lake/raw/Unstructure_Data`.
 
@@ -89,7 +88,7 @@ ingestion/
 
 | Input | Mô tả |
 |-------|--------|
-| **`.env` (root repo)** | Khuyến nghị: `VNSTOCK_API_KEY=…` — dùng cho vnstock (giá, tin, BCTC discovery). `load_dotenv_from_project_root()` đọc khi gọi `register_vnstock_api_key_from_env`. |
+| **`.env` (root repo)** | Khuyến nghị: `VNSTOCK_API_KEY=…` — dùng cho vnstock (giá, BCTC discovery). Luồng news RSS/HTML vẫn chạy khi không có key này. |
 | **`requirements.txt`** | vnstock, pandas, pyarrow, requests, beautifulsoup4, feedparser, PyYAML, python-dotenv, … |
 | **`listing.parquet`** | Bắt buộc cho news (`use_listing_tickers=True`) và BCTC (lọc mã theo sàn). Sinh ra từ `ingest_listing()` trong pipeline có cấu trúc. |
 | **`unstructured_data/sources.yaml`** | URL RSS + cấu hình HTML list (selector CSS). |
@@ -127,28 +126,37 @@ ingestion/
 
 ### 5.1. Nguồn
 
-1. **vnstock** — `Company.news` theo từng mã (KBS: phân trang `page_size ≤ 20`; có map `article_id` từ API).
-2. **RSS** — `requests` + `feedparser`, URL từ `NewsIngestionConfig.rss_feed_urls` + `sources.yaml`.
-3. **HTML** — `requests` + BeautifulSoup, `list_url` + `link_css` trong `sources.yaml`.
+1. **RSS** — `requests` + `feedparser`, URL từ `NewsIngestionConfig.rss_feed_urls` + `sources.yaml`.
+2. **HTML** — `requests` + BeautifulSoup, `list_url` + `link_css` trong `sources.yaml`.
 
 ### 5.2. Cấu hình — `NewsIngestionConfig` (`unstructured_data/config.py`)
 
 | Tham số | Ý nghĩa |
 |---------|---------|
+| `tickers` | Danh sách mã đầu vào thủ công (fallback khi không đọc listing) |
 | `use_listing_tickers` | `True`: đọc mã từ `listing.parquet` (tối đa `max_tickers_per_run`) |
 | `listing_exchange_filter` | Lọc sàn (vd. `HSX`, `HNX` — trong listing vnstock sàn chính thường là **HSX**, không phải HOSE) |
-| `days_back` | Lọc bài theo `published_at`; `0` = không lọc |
-| `split_news_output_by_source` | `True`: 3 file `vnstock`/`rss`/`html`; `False`: một file `items/` |
-| `enable_vnstock`, `enable_rss`, `enable_html` | Bật từng nguồn |
+| `days_back` | Mốc lọc mặc định theo `published_at`; `0` = không lọc |
+| `days_back_rss`, `days_back_html` | Override theo từng nguồn; nếu `None` sẽ fallback về `days_back` |
+| `enable_rss`, `enable_html` | Bật từng nguồn |
+| `rss_max_per_feed`, `html_max_per_source` | Giới hạn số bài lấy theo feed/source |
+| `strict_published_at_days_back` | `True`: lọc strict theo `published_at` hợp lệ + trong khoảng thời gian |
+| `enable_ticker_match` | Bật/tắt heuristic map ticker từ `title/summary/body` |
+| `append_only`, `truncate_partition` | Luồng hiện dùng fixed file `PART-000.parquet`; khi `truncate_partition=True` sẽ dọn partition trước khi ghi |
 
 ### 5.3. Hàm chính
 
-- **`ingest_news(cfg) -> dict[str, str]`** — khóa `vnstock`, `rss`, `html`, `combined` (đường dẫn rỗng nếu không ghi).
-- **`primary_news_display_path(paths)`** — một đường dẫn gọn để log/UI.
+- **`ingest_news(cfg) -> dict[str, dict[str, str] | dict[str, int]]`**
+  - Trả về `row_counts` và đường dẫn output theo nguồn đang bật.
+  - Cấu trúc điển hình:
+    - `row_counts`: `{"rss": <int>, "html": <int>}`
+    - `rss`: `{"parquet": ".../news/rss/date=<run_date>/PART-000.parquet"}`
+    - `html`: `{"parquet": ".../news/html/date=<run_date>/PART-000.parquet"}`
+  - Nếu tắt nguồn nào thì key nguồn đó không xuất hiện.
 
 ### 5.4. Notebook
 
-- **`ingest_news.ipynb`**: chỉ tin — cấu hình → `ingest_news` → kiểm tra Parquet.
+- **`ingest_news.ipynb`**: chỉ tin — cấu hình → `ingest_news` → kiểm tra output parquet theo `rss/html` + validation schema.
 
 ---
 

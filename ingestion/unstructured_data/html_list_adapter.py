@@ -107,14 +107,10 @@ def fetch_html_list_news(
 
         soup = BeautifulSoup(html_text, "html.parser")
         anchors = soup.select(link_css)
-        LOGGER.info(
-            "HTML list %s: links_found=%d (take<=%d)",
-            list_url,
-            len(anchors),
-            max_per,
-        )
+        anchors_found = len(anchors)
         detail_cfg = spec.get("detail") or {}
         detail_success = 0
+        rows_before = len(rows)
         for a in anchors[:max_per]:
             href = compact_text(a.get("href"))
             title = compact_text(a.get_text())
@@ -187,13 +183,15 @@ def fetch_html_list_news(
                 }
             )
 
-        if detail_cfg:
-            LOGGER.info(
-                "HTML list %s: detail_success=%d/%d",
-                list_url,
-                detail_success,
-                min(len(anchors), max_per),
-            )
+        rows_added = len(rows) - rows_before
+        LOGGER.info(
+            "HTML source=%s anchors_found=%d detail_success=%d rows_added=%d take<=%d",
+            list_url,
+            anchors_found,
+            detail_success if detail_cfg else 0,
+            rows_added,
+            max_per,
+        )
 
     if not rows:
         return empty_news_frame()
