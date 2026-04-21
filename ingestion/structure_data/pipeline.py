@@ -24,7 +24,7 @@ def run_structure_ingestion_pipeline(
     include_indices: bool = True,
     include_listing: bool = True,
     include_company: bool = True,
-    include_financial_ratio: bool = True,
+    include_financial_ratio: bool = False,
     include_price_board: bool = True,
 ) -> dict[str, Any]:
     """Chạy tuần tự các bước ingest, nghỉ giữa các nhóm để giảm lỗi mạng / rate limit."""
@@ -55,3 +55,18 @@ def run_structure_ingestion_pipeline(
     if include_price_board:
         out["price_board"] = ingest_price_board(cfg)
     return out
+
+
+def run_financial_ratio_ingestion_pipeline(
+    cfg: IngestionConfig | None = None,
+) -> dict[str, Any]:
+    """Chạy riêng financial_ratio để gắn vào schedule độc lập (weekly/monthly)."""
+    cfg = cfg or IngestionConfig()
+    return {"financial_ratio": ingest_financial_ratio(cfg)}
+
+
+def run_structure_full_ingestion_pipeline(
+    cfg: IngestionConfig | None = None,
+) -> dict[str, Any]:
+    """Giữ hành vi đầy đủ cũ: chạy cả financial_ratio trong cùng pipeline."""
+    return run_structure_ingestion_pipeline(cfg, include_financial_ratio=True)

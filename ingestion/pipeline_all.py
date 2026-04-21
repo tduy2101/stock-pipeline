@@ -20,7 +20,10 @@ from ingestion.common import configure_logging, load_dotenv_from_project_root
 
 from ingestion.semi_structure_data import BctcPdfConfig, ingest_bctc_pdfs
 from ingestion.structure_data.config import IngestionConfig
-from ingestion.structure_data.pipeline import run_structure_ingestion_pipeline
+from ingestion.structure_data.pipeline import (
+    run_financial_ratio_ingestion_pipeline,
+    run_structure_ingestion_pipeline,
+)
 from ingestion.unstructured_data import (
     NewsIngestionConfig,
     ingest_news,
@@ -35,6 +38,7 @@ def run_full_raw_pipeline(
     bctc_cfg: BctcPdfConfig | None = None,
     *,
     include_structure: bool = True,
+    include_financial_ratio: bool = False,
     include_news: bool = True,
     include_bctc: bool = True,
     bctc_refresh_listing: bool = True,
@@ -48,12 +52,23 @@ def run_full_raw_pipeline(
     news_cfg = news_cfg or NewsIngestionConfig()
     bctc_cfg = bctc_cfg or BctcPdfConfig()
 
-    # ── 1. Có cấu trúc ──────────────────────────────────────────────
+    # ── 1. Có cấu trúc (daily: không gồm financial_ratio) ──────────
     if include_structure:
         LOGGER.info("pipeline: [1/3] structure ingestion")
-        out["structure"] = run_structure_ingestion_pipeline(structure_cfg)
+        out["structure"] = run_structure_ingestion_pipeline(
+            structure_cfg,
+            include_financial_ratio=False,
+        )
 
-    if delay_between_groups_sec > 0 and include_structure and (include_news or include_bctc):
+    # ── 1b. Financial ratio chạy tách lịch (weekly/monthly) ───────
+    if include_financial_ratio:
+        LOGGER.info("pipeline: [1b/3] financial_ratio ingestion (separate schedule)")
+        out["financial_ratio"] = run_financial_ratio_ingestion_pipeline(structure_cfg)[
+            "financial_ratio"
+        ]
+
+    ran_structure_group = include_structure or include_financial_ratio
+    if delay_between_groups_sec > 0 and ran_structure_group and (include_news or include_bctc):
         LOGGER.info("pipeline: pause %ss between groups", delay_between_groups_sec)
         time.sleep(delay_between_groups_sec)
 
@@ -91,6 +106,11 @@ def _cli() -> None:
         description="Run raw ingestion pipeline (structure → news → BCTC).",
     )
     parser.add_argument("--no-structure", action="store_true", help="Skip structured data")
+    parser.add_argument(
+        "--include-financial-ratio",
+        action="store_true",
+        help="Run financial_ratio in this execution (default off for daily DAG)",
+    )
     parser.add_argument("--no-news", action="store_true", help="Skip news")
     parser.add_argument("--no-bctc", action="store_true", help="Skip BCTC PDF")
     parser.add_argument("--delay", type=int, default=30, help="Pause (sec) between groups")
@@ -121,6 +141,7 @@ def _cli() -> None:
         news_cfg,
         bctc_cfg,
         include_structure=not args.no_structure,
+        include_financial_ratio=args.include_financial_ratio,
         include_news=not args.no_news,
         include_bctc=not args.no_bctc,
         delay_between_groups_sec=args.delay,

@@ -15,10 +15,10 @@ ingestion/
 ├── structure_data/            # Dữ liệu có cấu trúc (vnstock)
 │   ├── config.py              # IngestionConfig
 │   ├── common.py              # logging, retry, rate limit, save_partition/master, OHLCV
-│   ├── pipeline.py            # run_structure_ingestion_pipeline()
-│   ├── price_ingestor.py      # Giá cổ phiếu (Quote.history)
-│   ├── index_ingestor.py      # Chỉ số (Quote.history)
-│   └── stock_info_ingestor.py # listing, company overview, financial ratio, price board
+│   ├── pipeline.py            # run_structure_ingestion_pipeline(), run_structure_full_ingestion_pipeline(), run_financial_ratio_ingestion_pipeline()
+│   ├── price_ingestor.py      # Giá cổ phiếu (Quote.history) + full/incremental window
+│   ├── index_ingestor.py      # Chỉ số (Quote.history) + full/incremental window
+│   └── stock_info_ingestor.py # listing, company overview (append history), financial ratio (fail-fast), price board
 ├── unstructured_data/         # Tin tức
 │   ├── config.py              # NewsIngestionConfig
 │   ├── news_ingestor.py       # ingest_news() — điều phối RSS + HTML
@@ -48,12 +48,17 @@ ingestion/
 
 | Thành phần | Đường dẫn | Định dạng | Ghi chú |
 |------------|-----------|-----------|---------|
-| Giá cổ phiếu | `Structure_Data/price/date=<YYYY-MM-DD>/<TICKER>.parquet` | Parquet | Mỗi mã một file; `run_date` = ngày chạy notebook |
-| Chỉ số | `Structure_Data/index/date=<YYYY-MM-DD>/<INDEX_CODE>.parquet` | Parquet | VNINDEX, VN30, HNXINDEX, … |
+| Giá cổ phiếu | `Structure_Data/price/date=<RUN_DATE>/<TICKER>.parquet` | Parquet | Mỗi mã một file |
+| Chỉ số | `Structure_Data/index/date=<RUN_DATE>/<INDEX_CODE>.parquet` | Parquet | VNINDEX, VN30, HNXINDEX, … |
 | Listing (master) | `Structure_Data/listing/master/listing.parquet` | Parquet | **Ghi đè** mỗi lần ingest listing |
 | Company overview (master) | `Structure_Data/company/master/company_overview.parquet` | Parquet | **Append** theo batch (`ingest_run_id`) |
-| Financial ratio | `Structure_Data/financial_ratio/date=<YYYY-MM-DD>/<TICKER>.parquet` | Parquet | |
-| Price board snapshot | `Structure_Data/price_board/date=<YYYY-MM-DD>/PRICE_BOARD_SNAPSHOT.parquet` | Parquet | |
+| Financial ratio | `Structure_Data/financial_ratio/date=<RUN_DATE>/<TICKER>.parquet` | Parquet | Nên chạy lịch riêng (weekly/monthly) |
+| Price board snapshot | `Structure_Data/price_board/date=<RUN_DATE>/PRICE_BOARD_SNAPSHOT.parquet` | Parquet | Snapshot theo lần chạy |
+| Bootstrap marker (tuỳ chọn) | `Structure_Data/price/_full_bootstrap_done.json`, `Structure_Data/index/_full_bootstrap_done.json` | JSON | Dùng cho mode full-once-then-incremental |
+
+`RUN_DATE` lấy từ `IngestionConfig.run_date`:
+- Mặc định: `YYYY-MM-DD`
+- Nếu set `cfg.run_partition` (vd notebook manager): `YYYY-MM-DDTHHMMSS`
 
 **Gốc logic:** `IngestionConfig.data_lake_root` → `…/data-lake/raw/Structure_Data` (tính từ vị trí `structure_data/config.py`).
 
@@ -99,26 +104,50 @@ ingestion/
 
 ### 4.1. API / thư viện
 
-- **vnstock:** `Quote`, `Listing`, `Company`, `Finance`, `Trading` theo `primary_source` / `fallback_source` (mặc định thường `kbs` + `vci`).
+- **vnstock:** `Quote`, `Listing`, `Company`, `Finance`, `Trading` theo `primary_source` / `fallback_source`.
+- Mặc định hiện tại trong `IngestionConfig`: `primary_source="kbs"`, `fallback_source="vci"`.
+- `price` / `index` có fallback tự động theo source nếu nguồn chính lỗi/QC fail.
+- `company` / `financial_ratio` có cơ chế ưu tiên nguồn + disable tạm nguồn lỗi không tương thích/outage.
 
 ### 4.2. Cấu hình — `IngestionConfig` (`structure_data/config.py`)
 
-| Tham số (đại diện) | Ý nghĩa |
-|--------------------|---------|
-| `tickers` | Danh sách mã cổ phiếu |
-| `index_tickers` | Danh sách mã chỉ số |
-| `primary_source`, `fallback_source` | Nguồn vnstock (kbs/vci) |
-| `rate_limit_rpm`, `years_back`, `max_tickers_per_run` | Giới hạn tốc độ và phạm vi thời gian |
-| `delay_between_categories_sec` | Nghỉ giữa các nhóm trong pipeline |
+| Nhóm tham số | Tham số (đại diện) | Ý nghĩa |
+|--------------|---------------------|---------|
+| Danh mục chạy | `tickers`, `index_tickers`, `max_tickers_per_run` | Danh sách mã cần ingest |
+| Source & tốc độ | `primary_source`, `fallback_source`, `rate_limit_rpm`, `inter_request_delay_sec` | Chọn nguồn + pacing request |
+| Cửa sổ thời gian | `years_back`, `use_incremental_window`, `incremental_window_days`, `bootstrap_full_history_if_missing` | Quyết định fetch full hay incremental |
+| Full-once mode | `full_bootstrap_once_then_incremental`, `full_bootstrap_marker_file` | Lần đầu full, các lần sau incremental theo marker (price/index) |
+| Partition output | `run_partition` | Override `run_date` để tạo partition theo timestamp |
+| QC OHLCV | `min_ohlcv_rows_stock`, `min_ohlcv_rows_index`, `min_ohlcv_rows_stock_incremental`, `min_ohlcv_rows_index_incremental` | Ngưỡng QC tách theo full/incremental |
+| Retry chung | `api_retry_max_attempts`, `api_retry_base_delay_sec` | Retry cho API chung |
+| Retry ratio | `financial_ratio_retry_max_attempts`, `financial_ratio_retry_base_delay_sec`, `financial_ratio_disable_source_on_transient_error`, `financial_ratio_abort_after_consecutive_source_errors` | Giảm treo khi upstream ratio không ổn định |
+| Điều phối pipeline | `delay_between_categories_sec` | Nghỉ giữa các nhóm trong pipeline |
 
 ### 4.3. Hàm chính
 
-- **`run_structure_ingestion_pipeline(cfg)`** (`pipeline.py`): tuần tự (có thể tắt từng nhánh qua kwargs)  
-  `ingest_prices` → `ingest_indices` → `ingest_listing` → `ingest_company_overview` → `ingest_financial_ratio` → `ingest_price_board`.
+- **`run_structure_ingestion_pipeline(cfg)`** (`pipeline.py`): pipeline mặc định cho daily, **không chạy `financial_ratio`** nếu không bật cờ.  
+  Mặc định: `price` → `index` → `listing` → `company` → `price_board`.
+- **`run_financial_ratio_ingestion_pipeline(cfg)`**: chạy riêng `financial_ratio` (phù hợp lịch weekly/monthly).
+- **`run_structure_full_ingestion_pipeline(cfg)`**: giữ hành vi “full cũ” (bao gồm `financial_ratio` trong cùng pipeline).
+
+Chi tiết hành vi các ingestor:
+- `ingest_prices` / `ingest_indices`:
+  - Full mode khi `use_incremental_window=False`.
+  - Incremental mode khi `use_incremental_window=True` với cửa sổ `incremental_window_days`.
+  - Nếu thiếu dữ liệu lịch sử và `bootstrap_full_history_if_missing=True` thì bootstrap full cho mã chưa có file.
+  - Hỗ trợ mode full-once-then-incremental qua marker JSON.
+- `ingest_company_overview`:
+  - Ghi vào master dạng append snapshot (có `snapshot_date`, `ingest_run_id`, `fetched_at`).
+  - Dedupe theo `ticker + snapshot_date + source`.
+- `ingest_financial_ratio`:
+  - Có retry riêng cho ratio, disable tạm source lỗi, và fail-fast khi lỗi liên tiếp.
 
 ### 4.4. Notebook
 
-- **`ingest_structure_data_manager.ipynb`**: setup `sys.path`, UTF-8 guard, gọi từng bước hoặc full pipeline.
+- **`ingest_structure_data_manager.ipynb`**:
+  - Setup `sys.path`, UTF-8 guard, reload submodule để tránh cache notebook.
+  - Có `RUN_PROFILE` để chuyển nhanh giữa `backfill` và `daily_incremental`.
+  - Thường set `cfg.run_partition = datetime.now().strftime("%Y-%m-%dT%H%M%S")` để mỗi lần chạy tạo partition riêng.
 
 ---
 
@@ -206,33 +235,40 @@ out = run_full_raw_pipeline(
     NewsIngestionConfig(),
     BctcPdfConfig(),
     include_structure=True,
+    include_financial_ratio=False,  # ratio tách lịch mặc định
     include_news=True,
     include_bctc=True,
     bctc_refresh_listing=True,
     delay_between_groups_sec=30,
 )
-# out["structure"], out["news_paths"], out["news_path"], out["bctc"]
+# out["structure"], out["financial_ratio"], out["news_paths"], out["news_path"], out["bctc"]
 ```
 
 ### 7.2. Dòng lệnh (từ **root repo**)
 
 ```bash
 python -m ingestion.pipeline_all
+python -m ingestion.pipeline_all --include-financial-ratio
 python -m ingestion.pipeline_all --no-structure
 python -m ingestion.pipeline_all --no-news --max-tickers 100
 python -m ingestion.pipeline_all --no-bctc --max-symbols-bctc 50
 ```
 
-Tham số CLI: `--no-structure`, `--no-news`, `--no-bctc`, `--delay`, `--max-tickers`, `--max-symbols-bctc`.
+Tham số CLI: `--no-structure`, `--include-financial-ratio`, `--no-news`, `--no-bctc`, `--delay`, `--max-tickers`, `--max-symbols-bctc`.
 
 ---
 
 ## 8. Thứ tự chạy khuyến nghị (đồ án / máy mới)
 
 1. Tạo venv, `pip install -r requirements.txt`, copy `.env.example` → `.env` và điền API key.
-2. Chạy **`ingest_structure_data_manager.ipynb`** (ít nhất **listing** + các nhóm cần thiết) để có `listing.parquet`.
-3. Chạy **`ingest_news.ipynb`** hoặc **`ingest_bctc.ipynb`** độc lập theo nhu cầu.
-4. Hoặc một lệnh: **`python -m ingestion.pipeline_all`** (có pause giữa các nhóm).
+2. Chạy **`ingest_structure_data_manager.ipynb`**:
+   - Daily: profile `daily_incremental` cho `price/index/listing/company/price_board`.
+   - Backfill: profile `backfill` khi cần kéo full lịch sử.
+3. Chạy `financial_ratio` theo lịch riêng (weekly/monthly) bằng:
+   - notebook (cell ratio riêng), hoặc
+   - `python -m ingestion.pipeline_all --include-financial-ratio`.
+4. Chạy **`ingest_news.ipynb`** hoặc **`ingest_bctc.ipynb`** độc lập theo nhu cầu.
+5. Hoặc một lệnh: **`python -m ingestion.pipeline_all`** cho daily bundle (không gồm ratio nếu không bật cờ).
 
 ---
 
@@ -243,5 +279,3 @@ Tham số CLI: `--no-structure`, `--no-news`, `--no-bctc`, `--delay`, `--max-tic
 - **Full listing BCTC:** `max_symbols_per_run=None` × nhiều trang tin = thời gian và rate limit rất lớn; nên chia batch hoặc tăng `rate_limit_rpm` trong giới hạn tài khoản vnstock.
 
 ---
-
-*Tài liệu này mô tả trạng thái codebase tại thời điểm viết; khi đổi `config` hoặc layout, cập nhật song song README này.*
