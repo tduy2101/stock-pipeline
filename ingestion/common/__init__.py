@@ -22,6 +22,14 @@ def configure_logging() -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    # Windows console thường là cp1252 — log có path tiếng Việt dễ gây UnicodeEncodeError.
+    for handler in logging.root.handlers:
+        stream = getattr(handler, "stream", None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError, AttributeError):
+                pass
 
 
 def wait_for_rate_limit(rate_limit_rpm: int) -> None:
