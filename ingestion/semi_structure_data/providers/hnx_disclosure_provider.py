@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup
 from ingestion.common import call_with_retry, wait_for_rate_limit
 
 from ..config import SemiStructuredIngestionConfig
+from ..document_classifier import apply_canonical_selection, build_stable_doc_id, enrich_document_row
 
 LOGGER = logging.getLogger(__name__)
 
@@ -22,32 +23,34 @@ _INCLUDE_BASE = (
     "bctc",
     "bao cao tai chinh",
     "bc tai chinh",
+    "BaoCaoTaiChinh",
+    "BaoCaoTaiChinhCtyMe",
+    "BaoCaoTaiChinhCoBan",
+    "BaoCaoTaiChinhCoBanCtyMe",
+    "BaoCaoTaiChinhHopNhat"
 )
+
+# KHÔNG dùng annual_hint để loại cứng ở crawler nếu muốn giữ cả quý + năm
 _INCLUDE_ANNUAL_HINT = (
     "nam",
     "kiem toan",
     "da kiem toan",
     "hop nhat",
 )
-# Khong loai "cbtt": nhieu file BCTC tren HNX co doan ..._CBTT_Bao_cao... trong ten file.
+
 _EXCLUDE_KEYWORDS_BCTC = (
-    "giai trinh",
-    "cong bo thong tin",
-    "disclosure",
     "uponrequest",
     "upon request",
-    "nghi quyet",
     "tai lieu hop",
+    "nghi quyet",
+    "EN",
 )
+
+# Giữ trống hoặc chỉ loại các tài liệu ngoài phạm vi tài chính
 _EXCLUDE_KEYWORDS = (
-    "q1",
-    "q2",
-    "q3",
-    "quy",
-    "ban nien",
-    "6 thang",
-    "giai trinh",
-    "cbtt",
+    "nghi quyet",
+    "resolution",
+    "EN"
 )
 _YEAR_PATTERN = re.compile(r"20\d{2}")
 
@@ -83,6 +86,38 @@ def _max_list_pages() -> int:
     if raw.isdigit():
         return max(1, min(int(raw), 500))
     return 500
+
+
+def _crawl_state_path(cfg: SemiStructuredIngestionConfig) -> Path:
+    return cfg.semi_structure_root / "_state" / "hnx_crawl_state.json"
+
+
+def _resume_from_state_enabled() -> bool:
+    return os.environ.get("HNX_RESUME_FROM_STATE", "").strip().lower() in ("1", "true", "yes")
+
+
+def _load_crawl_state(cfg: SemiStructuredIngestionConfig) -> dict[str, Any]:
+    path = _crawl_state_path(cfg)
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as ex:
+        LOGGER.warning("Khong doc duoc crawl state %s: %s", path, ex)
+        return {}
+
+
+def _save_crawl_state(cfg: SemiStructuredIngestionConfig, page: int) -> None:
+    path = _crawl_state_path(cfg)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "last_success_page": int(page),
+            "updated_at": __import__("datetime").datetime.utcnow().isoformat(),
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as ex:
+        LOGGER.warning("Khong ghi duoc crawl state %s: %s", path, ex)
 
 
 def _certifi_bundle() -> bool | str:
@@ -290,12 +325,13 @@ def _fetch_pdf_urls_from_detail(
 
         attachment_name = a.get_text(" ", strip=True)
         effective_title = f"{parent_title} {attachment_name}".strip()
-        is_match = _is_annual_bctc_candidate(
-            attachment_name=attachment_name,
-            title=effective_title,
-            url_pdf=abs_url,
-        )
-        if not cfg.strict_bctc_annual_keyword_filter:
+        if cfg.strict_bctc_annual_keyword_filter:
+            is_match = _is_annual_bctc_candidate(
+                attachment_name=attachment_name,
+                title=effective_title,
+                url_pdf=abs_url,
+            )
+        else:
             is_match = _is_bctc_candidate(
                 attachment_name=attachment_name,
                 title=effective_title,
@@ -321,7 +357,19 @@ def _fetch_hnx_live_api_records(cfg: SemiStructuredIngestionConfig) -> list[dict
 
     out: list[dict[str, Any]] = []
     detail_pdf_cache: dict[int, list[dict[str, str]]] = {}
-    page = 1
+
+    start_page = 1
+    if _resume_from_state_enabled():
+        state = _load_crawl_state(cfg)
+        last_success = int(state.get("last_success_page") or 0)
+        if last_success > 0:
+            start_page = last_success + 1
+            LOGGER.info(
+                "HNX_RESUME_FROM_STATE=1 -> tiep tuc tu trang %s (last_success=%s)",
+                start_page,
+                last_success,
+            )
+    page = start_page
 
     max_pages = _max_list_pages()
     while page <= max_pages:
@@ -392,6 +440,9 @@ def _fetch_hnx_live_api_records(cfg: SemiStructuredIngestionConfig) -> list[dict
                     }
                 )
 
+        if _resume_from_state_enabled():
+            _save_crawl_state(cfg, page)
+
         page += 1
 
     LOGGER.info("HNX AJAX crawl: %s ban ghi (truoc loc BCTC nam)", len(out))
@@ -427,19 +478,28 @@ def _extract_year(*values: str | None) -> str | None:
     return None
 
 
+def _build_haystack(attachment_name: str | None, title: str, url_pdf: str) -> str:
+    return _normalize_text(f"{attachment_name or ''} {title} {url_pdf}")
+
+
+def _passes_bctc_filters(haystack: str, *, strict_annual: bool) -> bool:
+    if not any(keyword in haystack for keyword in _INCLUDE_BASE):
+        return False
+    if strict_annual and not any(keyword in haystack for keyword in _INCLUDE_ANNUAL_HINT):
+        return False
+    excludes = _EXCLUDE_KEYWORDS if strict_annual else _EXCLUDE_KEYWORDS_BCTC
+    if any(keyword in haystack for keyword in excludes):
+        return False
+    return True
+
+
 def _is_annual_bctc_candidate(
     attachment_name: str | None,
     title: str,
     url_pdf: str,
 ) -> bool:
-    haystack = _normalize_text(f"{attachment_name or ''} {title} {url_pdf}")
-    if not any(keyword in haystack for keyword in _INCLUDE_BASE):
-        return False
-    if not any(keyword in haystack for keyword in _INCLUDE_ANNUAL_HINT):
-        return False
-    if any(keyword in haystack for keyword in _EXCLUDE_KEYWORDS):
-        return False
-    return True
+    haystack = _build_haystack(attachment_name, title, url_pdf)
+    return _passes_bctc_filters(haystack, strict_annual=True)
 
 
 def _is_bctc_candidate(
@@ -447,12 +507,8 @@ def _is_bctc_candidate(
     title: str,
     url_pdf: str,
 ) -> bool:
-    haystack = _normalize_text(f"{attachment_name or ''} {title} {url_pdf}")
-    if not any(keyword in haystack for keyword in _INCLUDE_BASE):
-        return False
-    if any(keyword in haystack for keyword in _EXCLUDE_KEYWORDS_BCTC):
-        return False
-    return True
+    haystack = _build_haystack(attachment_name, title, url_pdf)
+    return _passes_bctc_filters(haystack, strict_annual=False)
 
 
 def _project_root() -> Path:
@@ -595,8 +651,26 @@ def fetch_hnx_annual_bctc_documents(cfg: SemiStructuredIngestionConfig) -> list[
             "url_pdf": url_pdf,
             "url_detail": row.get("url_detail"),
             "year": year_text or None,
+            "attachment_name": row.get("attachment_name"),
         }
         out.append(normalized)
-    LOGGER.info("HNX annual BCTC documents sau loc: %s", len(out))
-    return out
+    enriched: list[dict[str, Any]] = []
+    for row in out:
+        enriched.append(enrich_document_row(dict(row), cfg))
+    apply_canonical_selection(enriched, cfg)
+    for d in enriched:
+        did = build_stable_doc_id(d)
+        LOGGER.info(
+            "doc_classify | doc_id=%s ticker=%s normalized_title=%s doc_class=%s language=%s "
+            "keep_for_parse=%s canonical_priority=%s",
+            did,
+            str(d.get("ticker") or ""),
+            str(d.get("normalized_title") or "")[:240],
+            d.get("doc_class"),
+            d.get("language"),
+            d.get("keep_for_parse"),
+            d.get("canonical_priority"),
+        )
+    LOGGER.info("HNX annual BCTC documents sau loc + classify: %s", len(enriched))
+    return enriched
 
