@@ -1,87 +1,46 @@
-﻿# Stock Pipeline MVP - Ke hoach tiep tuc de tai
+# Stock Pipeline Medallion Architecture
 
-## 1. Muc tieu de tai
+Du an: **Vietnam Stock Market Data Pipeline & Analysis Application**.
 
-De tai: **Xay dung he thong Data Pipeline & Ung dung Tra cuu Phan tich Thi truong Chung khoan Viet Nam Da nguon**.
-
-Muc tieu MVP la xay dung mot luong demo co chieu sau ky thuat:
-
-1. Thu thap du lieu tu nhieu nguon va nhieu dang cau truc.
-2. Luu toan bo du lieu goc vao **data lake**.
-3. Nap du lieu tu data lake vao **data warehouse**.
-4. Transform thanh cac bang phan tich va chi so ky thuat.
-5. Cung cap API va dashboard tra cuu cho nguoi dung cuoi.
-
-Trong MVP, **RAG/chatbot chi la phan mo rong**, khong nam tren duong chinh.
-
----
-
-## 2. Nguyen tac kien truc quan trong
-
-`data-lake/` la noi chua du lieu file cua du an, bao gom nhieu loai du lieu:
-
-- Structured: gia, index, listing, company, financial ratio.
-- Semi-structured: PDF BCTC, metadata PDF, text/table/fact parse tu PDF.
-- Unstructured: tin tuc RSS/HTML, noi dung text.
-
-`warehouse/` khong phai noi chua raw file. Thu muc nay chi nen chua:
-
-- DDL tao schema PostgreSQL/TimescaleDB.
-- Loader doc file tu `data-lake/raw/...` va nap vao DB.
-- Script phuc vu kiem tra/truy van warehouse.
-
-Quy uoc dung cho MVP:
+Muc tieu gan nhat la giu nguyen ingestion da chay duoc, sau do xay tiep pipeline theo Medallion Architecture:
 
 ```text
-data-lake/
-├── raw/                    # du lieu goc, giu nguyen layout hien co
-│   ├── Structure_Data/
-│   ├── Semi_Structure_Data/
-│   └── Unstructure_Data/
-└── processed/              # du lieu file da chuan hoa/tinh toan neu can chay local
-
-warehouse/
-├── ddl/                    # schema SQL
-└── loaders/                # load raw parquet/PDF metadata vao PostgreSQL
+Bronze  ->  Silver  ->  Gold  ->  API  ->  Dashboard
+raw files   clean DB   marts     FastAPI   React
 ```
 
-Khong doi ten `Structure_Data`, `Semi_Structure_Data`, `Unstructure_Data` trong MVP de tranh pha code va du lieu da chay.
+RAG/chatbot la phan mo rong sau MVP, khong nam tren duong chinh hien tai.
 
----
+## 1. Nguyen tac refactor
 
-## 3. Hien trang codebase hien co
+- Khong viet lai va khong di chuyen code ingestion cu trong `ingestion/`.
+- Khong doi layout Bronze hien co trong `data-lake/raw/`.
+- Bronze chi la file local, khong tao `raw_*` tables trong PostgreSQL.
+- Silver la tang clean/typed/deduped, co ca file Parquet va PostgreSQL schema `silver`.
+- Gold la tang serving/business-ready, tao bang PostgreSQL schema `gold` bang dbt.
+- Backend chi doc tu Gold, frontend chi goi backend.
 
-Repo chinh: `D:\WorkSpace\Đồ Án 2\stock-pipeline`
+## 2. Current Ingestion Layer
 
-### 3.1. Ingestion common
+Code ingestion hien tai van la nen tang cua project.
 
-Thu muc: `stock-pipeline/ingestion/common/`
+```text
+ingestion/
+├── common/                  # logging, dotenv, retry, rate limit, parquet helper
+├── structure_data/           # price, index, listing, company, financial ratio, price board
+├── unstructured_data/        # RSS/HTML news ingestion
+└── semi_structure_data/      # HNX BCTC PDF crawl/download/metadata
+```
 
-Vai tro:
+### Structured data
 
-- Cau hinh logging UTF-8.
-- Rate limit dung chung.
-- Retry/backoff dung chung.
-- Tim project root.
-- Doc `.env`.
-- Helper ghi Parquet.
+Entrypoints chinh:
 
-Day la module nen giu lam nen tang cho cac pipeline ingestion.
+- `run_structure_ingestion_pipeline`
+- `run_structure_full_ingestion_pipeline`
+- `run_financial_ratio_ingestion_pipeline`
 
-### 3.2. Structured data ingestion
-
-Thu muc: `stock-pipeline/ingestion/structure_data/`
-
-Da co:
-
-- `config.py`: `IngestionConfig` cho ticker, index, source, rate limit, incremental/backfill.
-- `price_ingestor.py`: lay OHLCV co phieu.
-- `index_ingestor.py`: lay OHLCV chi so.
-- `stock_info_ingestor.py`: listing, company overview, financial ratio, price board.
-- `pipeline.py`: orchestration tuan tu cho structured data.
-- `README.md`: tai lieu module.
-
-Output hien tai:
+Bronze output:
 
 ```text
 data-lake/raw/Structure_Data/
@@ -93,21 +52,13 @@ data-lake/raw/Structure_Data/
 └── price_board/date=<run_date>/PRICE_BOARD_SNAPSHOT.parquet
 ```
 
-### 3.3. Unstructured data ingestion
+### Unstructured data
 
-Thu muc: `stock-pipeline/ingestion/unstructured_data/`
+Entrypoint chinh:
 
-Da co:
+- `ingest_news`
 
-- `config.py`: `NewsIngestionConfig`.
-- `sources.yaml`: RSS/HTML sources.
-- `rss_adapter.py`: doc RSS feed.
-- `html_list_adapter.py`: crawl HTML list/detail.
-- `schema.py`: normalize URL, article id, ticker extraction, validate.
-- `news_ingestor.py`: orchestrator.
-- `_smoke_test_news.py`: chay thu nhanh.
-
-Output hien tai:
+Bronze output:
 
 ```text
 data-lake/raw/Unstructure_Data/news/
@@ -115,21 +66,13 @@ data-lake/raw/Unstructure_Data/news/
 └── html/date=<run_date>/PART-000.parquet
 ```
 
-### 3.4. Semi-structured data ingestion
+### Semi-structured data
 
-Thu muc: `stock-pipeline/ingestion/semi_structure_data/`
+Entrypoint chinh:
 
-Da co:
+- `run_bctc_annual_pipeline`
 
-- `config.py`: `SemiStructuredIngestionConfig`.
-- `providers/hnx_disclosure_provider.py`: crawl cong bo thong tin HNX.
-- `document_classifier.py`: phan loai BCTC, ngon ngu, canonical document.
-- `downloader.py`: download PDF co retry/resume/integrity check.
-- `http_client.py`: session/timeout/SSL helper.
-- `bctc_annual_pdf_ingestor.py`: crawl + download + metadata.
-- `pipeline.py`: run download PDF + metadata.
-
-Output hien tai:
+Bronze output:
 
 ```text
 data-lake/raw/Semi_Structure_Data/
@@ -137,656 +80,128 @@ data-lake/raw/Semi_Structure_Data/
 └── bctc_annual_pdf_meta/source=hnx/date=<run_date>/PART-000.parquet
 ```
 
-### 3.5. Notebook manager
+## 3. Target Codebase Layout
 
-Thu muc: `stock-pipeline/ingestion/`
-
-Dang co:
-
-- `ingest_structure_data_manager.ipynb`
-- `ingest_news.ipynb`
-- `ingest_bctc_pdf_manager.ipynb`
-
-Notebook nen duoc giu cho qua trinh thu nghiem, nhung pipeline chinh nen nam trong Python module va Airflow DAG.
-
----
-
-## 4. Kien truc muc tieu MVP
-
-```text
-Nguon du lieu
-  ├── vnstock / TCBS / VCI / KBS
-  ├── RSS / HTML news sites
-  └── HNX disclosure PDF
-        │
-        ▼
-Ingestion layer
-  ├── ingestion/structure_data
-  ├── ingestion/unstructured_data
-  └── ingestion/semi_structure_data
-        │
-        ▼
-Data lake raw layer
-  └── data-lake/raw/...
-        │
-        ▼
-Warehouse loading layer
-  ├── warehouse/ddl
-  └── warehouse/loaders
-        │
-        ▼
-Transform/analytics layer
-  ├── transform/dbt
-  └── transform/analytics
-        │
-        ▼
-Serving layer
-  ├── backend/FastAPI
-  └── frontend/React
-        │
-        ▼
-Nguoi dung demo
-  ├── tra cuu ma CK
-  ├── xem bieu do gia + chi so ky thuat
-  ├── xem BCTC/financial metrics
-  └── xem tin tuc + sentiment
-```
-
----
-
-## 5. Cau truc codebase de xay tiep
+Skeleton moi duoc them de tach ro tung tang. Cac file Python ingestion cu khong bi doi.
 
 ```text
 stock-pipeline/
-├── ingestion/
-│   ├── common/
-│   ├── structure_data/
-│   ├── semi_structure_data/
-│   └── unstructured_data/
-│
+├── ingestion/                # Bronze ingestion, existing code
 ├── data-lake/
-│   ├── raw/
-│   │   ├── Structure_Data/
-│   │   ├── Semi_Structure_Data/
-│   │   └── Unstructure_Data/
-│   └── processed/
-│       ├── technical_indicators/
-│       ├── sentiment/
-│       └── marts_snapshot/
-│
+│   ├── raw/                  # Bronze, existing layout
+│   └── silver/               # Silver Parquet, generated later
+├── pipeline/
+│   └── silver/               # Bronze -> Silver transformers/loaders
 ├── warehouse/
-│   ├── ddl/
-│   │   └── schema.sql
-│   ├── loaders/
-│   │   ├── __init__.py
-│   │   ├── config.py
-│   │   ├── parquet_reader.py
-│   │   ├── normalize.py
-│   │   └── load_raw_to_postgres.py
-│   └── README.md
-│
+│   └── ddl/                  # PostgreSQL/TimescaleDB DDL
 ├── transform/
-│   ├── dbt/
-│   │   ├── dbt_project.yml
-│   │   ├── models/
-│   │   │   ├── staging/
-│   │   │   ├── intermediate/
-│   │   │   └── marts/
-│   │   └── profiles.example.yml
-│   └── analytics/
-│       ├── __init__.py
-│       ├── technical_indicators.py
-│       └── sentiment_baseline.py
-│
-├── dags/
-│   ├── dag_structure_daily.py
-│   ├── dag_news_daily.py
-│   └── dag_bctc_quarterly.py
-│
-├── backend/
-│   ├── app/
-│   │   ├── main.py
-│   │   ├── database.py
-│   │   ├── settings.py
-│   │   └── routers/
-│   │       ├── tickers.py
-│   │       ├── prices.py
-│   │       ├── financials.py
-│   │       ├── news.py
-│   │       └── market.py
-│   └── README.md
-│
-├── frontend/
-│   ├── package.json
-│   ├── index.html
-│   └── src/
-│       ├── App.tsx
-│       ├── api.ts
-│       ├── pages/
-│       └── components/
-│
-├── tests/
-│   ├── test_news_schema.py
-│   ├── test_document_classifier.py
-│   ├── test_technical_indicators.py
-│   └── test_loader_normalize.py
-│
-├── docker-compose.yml
-├── requirements.txt
-├── .env.example
-└── README.md
+│   ├── analytics/            # pandas indicators/sentiment helpers
+│   └── dbt/                  # Silver -> Gold dbt project
+├── dags/                     # Airflow DAGs
+├── backend/                  # FastAPI, reads Gold only
+├── frontend/                 # React dashboard
+├── tests/                    # unit/integration tests
+└── MEDALLION_MVP_PLAN.md     # module-by-module implementation plan
 ```
 
----
-
-## 6. Phan chia module chi tiet
-
-### Module 1: Ingestion
-
-Muc tieu: thu thap du lieu va ghi vao `data-lake/raw`.
-
-Giu nguyen 3 ingestion group hien co:
-
-1. `structure_data`
-   - Gia OHLCV.
-   - Index OHLCV.
-   - Listing.
-   - Company overview.
-   - Financial ratio.
-   - Price board.
-
-2. `unstructured_data`
-   - RSS news.
-   - HTML news.
-   - Dedupe article.
-   - Extract ticker neu co.
-
-3. `semi_structure_data`
-   - Crawl HNX disclosure.
-   - Classify PDF.
-   - Download PDF.
-   - Parse text/table/fact.
-   - OCR optional.
-
-Viec can lam tiep:
-
-- Dam bao moi pipeline co `run_partition` de rerun idempotent.
-- Ghi them log summary sau moi lan chay.
-- Them smoke test nho cho tung ingestion group.
-
-### Module 2: Data lake
-
-Muc tieu: luu file du lieu theo tung stage.
-
-Raw layer giu nguyen:
+## 4. Medallion Data Flow
 
 ```text
-data-lake/raw/Structure_Data/...
-data-lake/raw/Semi_Structure_Data/...
-data-lake/raw/Unstructure_Data/...
+Sources
+  ├── vnstock / KBS / VCI
+  ├── RSS / HTML news
+  └── HNX disclosure PDFs
+        |
+        v
+Bronze: data-lake/raw/
+  - immutable-ish source landing files
+  - current ingestion modules write here
+        |
+        v
+Silver: data-lake/silver/ + PostgreSQL silver schema
+  - clean types
+  - dedupe
+  - validate
+  - one source of truth per entity
+        |
+        v
+Gold: PostgreSQL gold schema
+  - dbt marts
+  - mart_stock_daily
+  - mart_company_profile
+        |
+        v
+Serving
+  - FastAPI reads Gold only
+  - React/Recharts renders dashboard
 ```
 
-Processed layer nen them:
+## 5. Silver Targets
 
-```text
-data-lake/processed/technical_indicators/date=<run_date>/PART-000.parquet
-data-lake/processed/sentiment/date=<run_date>/PART-000.parquet
-data-lake/processed/marts_snapshot/date=<run_date>/stock_daily.parquet
-```
+Silver tables/files to build next:
 
-Nguyen tac:
+- `silver.price`
+- `silver.index_price`
+- `silver.listing`
+- `silver.company`
+- `silver.financial_ratio`
+- `silver.news`
+- `silver.bctc_pdf_meta`
+- `silver.bctc_facts`
+- `silver.price_indicator`
 
-- Raw: khong sua, khong overwrite ngoai logic partition da co.
-- Processed: co the regenerate tu raw.
-- Warehouse: co the drop/reload tu data lake.
-
-### Module 3: Warehouse
-
-Muc tieu: dua du lieu da thu thap vao PostgreSQL/TimescaleDB.
-
-Can them:
+DDL draft is stored at:
 
 ```text
 warehouse/ddl/schema.sql
-warehouse/loaders/load_raw_to_postgres.py
 ```
 
-Bang raw nen co:
+## 6. Gold Targets
 
-- `raw_price`
-- `raw_index`
-- `raw_listing`
-- `raw_company`
-- `raw_financial_ratio`
-- `raw_price_board`
-- `raw_news`
-- `raw_bctc_pdf_meta`
-- `raw_bctc_facts`
+Gold tables are built from Silver by dbt:
 
-Bang dimension:
+- `gold.mart_stock_daily`
+- `gold.mart_company_profile`
 
-- `dim_ticker`
-- `dim_date`
-- `dim_source`
-
-Bang fact/mart:
-
-- `fact_price`
-- `fact_news`
-- `fact_financial_metric`
-- `fact_technical_indicator`
-- `mart_stock_daily`
-- `mart_company_profile`
-
-Loader can lam:
-
-1. Tim file parquet moi nhat hoac theo `run_partition`.
-2. Doc Parquet bang pandas/pyarrow.
-3. Chuan hoa ten cot ve snake_case.
-4. Them metadata:
-   - `ingest_partition`
-   - `source_file`
-   - `loaded_at`
-5. Upsert vao PostgreSQL.
-6. Rerun cung partition khong tao duplicate.
-
-### Module 4: Transform/dbt
-
-Muc tieu: bien raw table thanh table phuc vu phan tich.
-
-Models staging:
-
-- `stg_price`
-- `stg_index`
-- `stg_listing`
-- `stg_company`
-- `stg_news`
-- `stg_bctc_facts`
-- `stg_financial_ratio`
-
-Models intermediate:
-
-- `int_price_cleaned`
-- `int_technical_indicators`
-- `int_news_sentiment_daily`
-- `int_financial_metrics_normalized`
-
-Models marts:
-
-- `mart_stock_daily`
-- `mart_company_profile`
-- `mart_news_by_ticker`
-
-MVP nen uu tien `mart_stock_daily` vi day la bang cap data truc tiep cho dashboard.
-
-### Module 5: Analytics Python
-
-Thu muc de them:
+Planned dbt location:
 
 ```text
-transform/analytics/
-├── technical_indicators.py
-└── sentiment_baseline.py
+transform/dbt/
 ```
 
-`technical_indicators.py` tinh:
+## 7. Smoke Test Existing Ingestion
 
-- MA7
-- MA20
-- MA50
-- RSI14
-- MACD 12/26/9
-- Bollinger Bands 20 ngay
+### Structured smoke
 
-`sentiment_baseline.py` lam MVP sentiment:
-
-- Danh sach tu tich cuc: tang, vuot, lai lon, ky luc, kha quan, phuc hoi.
-- Danh sach tu tieu cuc: giam, lo, lao doc, sut giam, ap luc, canh bao.
-- Score dua tren tan suat keyword trong title + summary.
-- Output: `positive`, `neutral`, `negative`, `score`.
-
-### Module 6: Airflow orchestration
-
-Thu muc de them:
-
-```text
-dags/
-├── dag_structure_daily.py
-├── dag_news_daily.py
-└── dag_bctc_quarterly.py
-```
-
-DAG 1: `dag_structure_daily`
-
-```text
-register_env
-  -> run_structure_ingestion
-  -> load_structure_raw_to_warehouse
-  -> run_dbt_price_models
-  -> run_technical_indicators
-```
-
-DAG 2: `dag_news_daily`
-
-```text
-run_news_ingestion
-  -> load_news_raw_to_warehouse
-  -> run_sentiment_baseline
-  -> run_dbt_news_models
-```
-
-DAG 3: `dag_bctc_quarterly`
-
-```text
-run_bctc_download
-  -> run_bctc_parse
-  -> load_bctc_raw_to_warehouse
-  -> run_dbt_financial_models
-```
-
-Nguyen tac DAG:
-
-- Moi task chay duoc rieng.
-- Moi task co log summary.
-- Rerun khong tao duplicate.
-- BCTC co the trigger manual trong demo.
-
-### Module 7: Backend FastAPI
-
-Thu muc de them:
-
-```text
-backend/app/
-├── main.py
-├── database.py
-├── settings.py
-└── routers/
-```
-
-Endpoint MVP:
-
-```text
-GET /health
-GET /tickers
-GET /tickers/{symbol}
-GET /prices/{symbol}?from=YYYY-MM-DD&to=YYYY-MM-DD
-GET /financials/{symbol}
-GET /news/{symbol}?limit=20
-GET /market/top
-```
-
-Nguon data backend:
-
-- Uu tien doc PostgreSQL mart tables.
-- Neu chua co DB trong giai doan demo som, co the fallback doc Parquet tu `data-lake/processed`.
-
-### Module 8: Frontend React
-
-Thu muc de them:
-
-```text
-frontend/src/
-├── App.tsx
-├── api.ts
-├── pages/
-│   ├── DashboardPage.tsx
-│   └── TickerDetailPage.tsx
-└── components/
-    ├── TickerSearch.tsx
-    ├── PriceChart.tsx
-    ├── TechnicalPanel.tsx
-    ├── FinancialPanel.tsx
-    └── NewsPanel.tsx
-```
-
-Man hinh MVP:
-
-1. Dashboard:
-   - Search ticker.
-   - Top movers.
-   - Market summary.
-
-2. Ticker detail:
-   - Price chart.
-   - MA/RSI/MACD summary.
-   - Financial metrics.
-   - Related news + sentiment badge.
-
-Chua can lam landing page marketing. Mo app la vao dashboard tra cuu.
-
----
-
-## 7. Lo trinh thuc hien tung buoc
-
-### Buoc 1: Chot tai lieu va cau truc
-
-Deliverable:
-
-- README me nay.
-- README trong repo `stock-pipeline/README.md` neu can.
-- So do module va data flow.
-
-Trang thai hien tai: can lam ngay.
-
-### Buoc 2: Warehouse schema
-
-Deliverable:
-
-- `warehouse/ddl/schema.sql`
-- Tao duoc PostgreSQL schema.
-
-Bang can co truoc:
-
-- `raw_price`
-- `raw_listing`
-- `raw_news`
-- `raw_bctc_facts`
-- `dim_ticker`
-- `fact_price`
-- `mart_stock_daily`
-
-### Buoc 3: Loader tu data lake vao warehouse
-
-Deliverable:
-
-- `warehouse/loaders/load_raw_to_postgres.py`
-- Load duoc structured price/listing.
-- Load duoc news.
-- Load duoc BCTC facts.
-
-Uu tien load sample truoc, khong can load toan bo ngay tu dau.
-
-### Buoc 4: Technical indicators
-
-Deliverable:
-
-- `transform/analytics/technical_indicators.py`
-- Tinh duoc MA/RSI/MACD/Bollinger cho mot ma CK.
-- Luu vao DB hoac `data-lake/processed/technical_indicators`.
-
-### Buoc 5: Sentiment baseline
-
-Deliverable:
-
-- `transform/analytics/sentiment_baseline.py`
-- Gan sentiment cho tin tuc.
-- Output co ticker, article_id, label, score.
-
-### Buoc 6: dbt marts
-
-Deliverable:
-
-- `transform/dbt/models/staging/...`
-- `transform/dbt/models/marts/mart_stock_daily.sql`
-- `dbt test` pass voi cac cot khoa.
-
-Neu thieu thoi gian, co the dung SQL/Python truoc, dbt sau.
-
-### Buoc 7: FastAPI
-
-Deliverable:
-
-- Backend chay local.
-- Endpoint `/health` ok.
-- Endpoint `/tickers`, `/prices/{symbol}`, `/news/{symbol}` tra JSON that.
-
-### Buoc 8: React dashboard
-
-Deliverable:
-
-- Search ticker.
-- Chart gia.
-- Panel news.
-- Panel financial metrics.
-
-### Buoc 9: Airflow
-
-Deliverable:
-
-- 3 DAG rieng.
-- Chay manual tung DAG.
-- Airflow UI dung de demo data pipeline.
-
-### Buoc 10: Test va demo script
-
-Deliverable:
-
-- Test unit co ban.
-- Demo checklist.
-- Slide luong du lieu.
-
----
-
-## 8. Ke hoach 15 tuan goi y
-
-| Tuan | Trong tam | Deliverable |
-|---|---|---|
-| 1 | Chot kien truc, README, ERD | README + schema draft |
-| 2 | Warehouse schema + Docker PostgreSQL | `schema.sql`, DB local |
-| 3 | Loader structured data | Load price/listing/company |
-| 4 | Loader news + BCTC facts | Load news/BCTC vao raw tables |
-| 5 | Clean staging tables | staging SQL/dbt |
-| 6 | Technical indicators | MA/RSI/MACD/Bollinger |
-| 7 | Financial metrics mart | `mart_company_profile` |
-| 8 | News sentiment baseline | sentiment score |
-| 9 | `mart_stock_daily` | bang tong hop cho dashboard |
-| 10 | FastAPI backend | API endpoints MVP |
-| 11 | React dashboard phase 1 | search + price chart |
-| 12 | React dashboard phase 2 | financial/news tabs |
-| 13 | Airflow DAGs | 3 DAG chay manual/daily |
-| 14 | Test + fix bug | pytest/dbt/API smoke |
-| 15 | Demo + bao cao | slide + demo live |
-
----
-
-## 9. Test plan
-
-### Unit test
-
-- Ticker extraction trong news.
-- News dedupe theo `article_id`.
-- Document classification BCTC.
-- Technical indicators voi input nho.
-- Normalize financial_ratio column names.
-
-### Data quality test
-
-- `ticker` khong null trong price/news/facts neu co.
-- `trading_date` khong null trong price.
-- `article_id` unique trong news.
-- `doc_id` khong null trong BCTC metadata/facts.
-- `close`, `volume` khong am.
-
-### Integration test
-
-Chay luong nho:
-
-```text
-ingestion sample
-  -> data-lake/raw
-  -> warehouse loader
-  -> transform mart
-  -> FastAPI endpoint
-  -> frontend chart
-```
-
-### Demo acceptance
-
-Demo nen chung minh duoc:
-
-1. Mo data lake thay raw files da duoc partition.
-2. Mo Airflow thay DAG.
-3. Mo PostgreSQL thay bang warehouse/mart.
-4. Mo API docs thay endpoint.
-5. Mo web app tim mot ma CK va thay chart/news/BCTC.
-
----
-
-## 10. Lenh chay tham khao
-
-### Chay structured ingestion
+Small run: one ticker, one index, no company/full financial ratio by default.
 
 ```powershell
-python -c "from ingestion.common import configure_logging; configure_logging(); from ingestion.structure_data import IngestionConfig, run_structure_ingestion_pipeline; print(run_structure_ingestion_pipeline(IngestionConfig()))"
+python -c "from ingestion.common import configure_logging; configure_logging(); from ingestion.structure_data import IngestionConfig, run_structure_ingestion_pipeline; cfg=IngestionConfig(tickers=['FPT'], index_tickers=['VNINDEX'], max_tickers_per_run=1, run_partition='smoke-structure', delay_between_categories_sec=0, use_incremental_window=True, incremental_window_days=5, min_ohlcv_rows_stock_incremental=1, min_ohlcv_rows_index_incremental=1); print(run_structure_ingestion_pipeline(cfg, include_listing=False, include_company=False, include_financial_ratio=False, include_price_board=False))"
 ```
 
-### Chay news ingestion
+### News smoke
+
+Small run with RSS only to avoid slow HTML detail crawl:
 
 ```powershell
-python ingestion/unstructured_data/_smoke_test_news.py
+python -c "from ingestion.common import configure_logging; configure_logging(); from ingestion.unstructured_data import NewsIngestionConfig, ingest_news; cfg=NewsIngestionConfig(enable_rss=True, enable_html=False, max_articles_per_source=5, rss_max_per_feed=5, days_back=7, days_back_rss=7, use_listing_tickers=False, tickers=['FPT','HPG','VCB'], rate_limit_rpm=120, append_only=False, truncate_partition=True); print(ingest_news(cfg))"
 ```
 
-### Chay BCTC pipeline
+### BCTC smoke
 
-```powershell
-python -c "from ingestion.common import configure_logging; configure_logging(); from ingestion.semi_structure_data import SemiStructuredIngestionConfig, run_bctc_annual_pipeline; print(run_bctc_annual_pipeline(SemiStructuredIngestionConfig(), include_download=True))"
-```
-
-### Chay voi crawl HNX gioi han 1 page de test
+Small HNX crawl, download disabled if you only want metadata-path validation:
 
 ```powershell
 $env:HNX_CRAWL_MAX_LIST_PAGES = "1"
-python -c "from ingestion.common import configure_logging; configure_logging(); from ingestion.semi_structure_data import SemiStructuredIngestionConfig, run_bctc_annual_pipeline; print(run_bctc_annual_pipeline(SemiStructuredIngestionConfig(), include_download=True))"
+python -c "from ingestion.common import configure_logging; configure_logging(); from ingestion.semi_structure_data import SemiStructuredIngestionConfig, run_bctc_annual_pipeline; cfg=SemiStructuredIngestionConfig(tickers=['PVI'], run_partition='smoke-bctc-pvi'); print(run_bctc_annual_pipeline(cfg, include_download=True))"
 ```
 
----
+## 8. Next Step
 
-## 11. Uu tien gan nhat
-
-Thu tu nen lam ngay:
-
-1. Tao `stock-pipeline/README.md` ban repo-level neu chua co.
-2. Tao `warehouse/ddl/schema.sql`.
-3. Tao `warehouse/loaders` de load Parquet tu `data-lake/raw`.
-4. Tao `transform/analytics/technical_indicators.py`.
-5. Tao `backend/app/main.py` voi `/health` va `/tickers`.
-6. Tao frontend dashboard don gian.
-7. Sau do moi them Airflow/dbt day du.
-
-Ly do: ingestion da co, nen gia tri tiep theo nam o viec bien data raw thanh san pham co the demo.
-
----
-
-## 12. Pham vi khong lam trong MVP dau tien
-
-De tranh qua tai, cac muc sau nen de sau:
-
-- RAG/chatbot.
-- MinIO thay data lake local.
-- HOSE disclosure crawler day du.
-- PhoBERT sentiment production.
-- OCR hang loat cho tat ca PDF.
-- Streaming/realtime pipeline.
-- Authentication cho dashboard.
-
----
-
-## 13. Ket luan
-
-Codebase hien tai da co nen tang ingestion tot cho 3 loai du lieu. Buoc tiep theo khong nen viet lai ingestion, ma nen xay cac tang con thieu:
+Doc ke hoach tiep theo nam trong:
 
 ```text
-data-lake raw -> warehouse -> transform/mart -> API -> dashboard -> Airflow demo
+MEDALLION_MVP_PLAN.md
 ```
 
-Trong do, `data-lake/` la trung tam luu tru file raw da nguon. `warehouse/` chi la tang database/schema/loaders de truy van va phuc vu ung dung.
+Doc nay chia theo module de cai tool va implement sau khi ingestion da duoc xac nhan chay on.

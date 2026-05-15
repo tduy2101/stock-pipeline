@@ -19,7 +19,7 @@ secrets.*
 # Project data (can be large and changes over time)
 data-lake/
 vnstock-agent-guide/
-
+code_reference&Plan/
 # OS / editor
 .DS_Store
 .idea/
