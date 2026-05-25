@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     load_parser.add_argument(
         "--dataset",
         default="all",
-        help="Dataset to load: all | price | price,index_price | listing,company",
+        help="Dataset to load: all | price | news | price,index_price | listing,company",
     )
     return parser
 

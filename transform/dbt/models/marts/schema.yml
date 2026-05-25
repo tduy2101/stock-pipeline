@@ -1,0 +1,78 @@
+version: 2
+
+models:
+  - name: fact_price_daily
+    columns:
+      - name: ticker
+        tests: [not_null]
+      - name: trading_date
+        tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [ticker, trading_date]
+
+  - name: dim_security
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+
+  - name: dim_company
+    columns:
+      - name: ticker
+        tests: [not_null, unique]
+
+  - name: mart_stock_daily
+    columns:
+      - name: ticker
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_security')
+                field: symbol
+      - name: trading_date
+        tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [ticker, trading_date]
+
+  - name: mart_company_profile
+    columns:
+      - name: ticker
+        tests: [not_null, unique]
+
+  - name: mart_market_overview
+    columns:
+      - name: trading_date
+        tests: [not_null, unique]
+
+  - name: mart_stock_news_daily
+    columns:
+      - name: ticker
+        tests: [not_null]
+      - name: published_date
+        tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [ticker, published_date]
+
+  - name: mart_bctc_documents
+    columns:
+      - name: doc_id
+        tests: [not_null, unique]
+      - name: ticker
+        tests: [not_null]
+
+  - name: int_news_sentiment_daily
+    columns:
+      - name: ticker
+        tests: [not_null]
+      - name: published_date
+        tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [ticker, published_date]

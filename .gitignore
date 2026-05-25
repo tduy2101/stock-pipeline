@@ -9,6 +9,14 @@ __pycache__/
 *.pdb
 .ipynb_checkpoints/
 
+# dbt local artifacts
+/target/
+/logs/
+/.user.yml
+transform/dbt/target/
+transform/dbt/logs/
+transform/dbt/.user.yml
+
 # Local environment / secrets (if you add them later)
 .env
 .env.*
@@ -24,4 +32,3 @@ code_reference&Plan/
 .DS_Store
 .idea/
 .vscode/
-

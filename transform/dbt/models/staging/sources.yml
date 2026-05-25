@@ -1,0 +1,44 @@
+version: 2
+
+sources:
+  - name: silver
+    schema: silver
+    tables:
+      - name: price
+      - name: index_price
+      - name: listing
+      - name: company
+      - name: financial_ratio
+      - name: price_board
+      - name: news
+        columns:
+          - name: article_id
+          - name: source
+          - name: ticker
+          - name: ticker_mentions
+          - name: title
+          - name: summary
+          - name: url
+          - name: published_at
+          - name: published_date
+          - name: sentiment_score
+          - name: sentiment_label
+          - name: word_count
+          - name: language
+      - name: bctc_pdf_meta
+        columns:
+          - name: doc_id
+          - name: ticker
+          - name: year
+          - name: period_key
+          - name: title
+          - name: published_at
+          - name: url_pdf
+          - name: pdf_path
+          - name: file_size
+          - name: doc_class
+          - name: is_consolidated
+          - name: display_status
+          - name: is_available_for_web
+          - name: qc_pass
+          - name: status

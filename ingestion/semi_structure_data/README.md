@@ -4,6 +4,87 @@ Module này chỉ thu thập PDF báo cáo tài chính từ HNX và ghi metadata
 
 Stage 2 parse PDF/OCR đã bị loại bỏ khỏi luồng này vì dữ liệu trích từ PDF scan và bảng BCTC không đủ ổn định cho pipeline phân tích hiện tại. Nếu cần dữ liệu tài chính có cấu trúc, nên ưu tiên nguồn structured/API riêng thay vì parse PDF.
 
+## Tóm Tắt Luồng Crawl PDF
+
+### Nguồn dữ liệu
+
+| Thứ tự | Nguồn | Mô tả |
+|--------|--------|--------|
+| 1 | **HNX live** (`www.hnx.vn`) | Crawl chính thức — không cần khai báo URL thủ công |
+| 2 | `data/hnx_sample.json` | Bản ghi mẫu / offline (hoặc `cfg.hnx_sample_json`) |
+| 3 | `data/hnx_urls.csv` | URL PDF hàng loạt (hoặc `cfg.hnx_urls_csv`) |
+
+Ba nguồn được **gộp** trong `fetch_hnx_annual_bctc_documents`, **dedupe theo `url_pdf`** (ưu tiên bản xuất hiện trước). Hiện chỉ hỗ trợ `source=hnx`; HOSE/UPCOM chưa có provider.
+
+`cfg.hnx_disclosure_api_url` / `HNX_DISCLOSURE_API_URL` **không** dùng cho crawl danh sách — endpoint cố định trên site HNX.
+
+### Cơ chế thu thập (HNX live)
+
+Dùng **`requests.Session`** + **BeautifulSoup** parse HTML fragment (không Selenium).
+
+```mermaid
+flowchart LR
+  A[POST danh sách công bố] --> B[Parse bảng HTML]
+  B --> C{Với mỗi bài viết}
+  C --> D[POST file đính kèm]
+  D --> E[Lọc link .pdf + keyword]
+  E --> F[Gộp metadata]
+  F --> G[Classifier + canonical]
+  G --> H[Download PDF]
+  H --> I[Parquet metadata]
+```
+
+**Bước 1 — Danh sách công bố (phân trang)**
+
+- **URL:** `POST https://www.hnx.vn/ModuleArticles/ArticlesCPEtfs/NextPageTinCPNY_CBTCPH`
+- **Body form:** `pNumPage`, `pNhomTin` = *"Báo cáo tài chính, Giải trình báo cáo tài chính"*, `pTieuDeTin` = *"báo cáo tài chính"*, `pMaChungKhoan` (chỉ điền khi `cfg.tickers` có đúng **1** mã), `pFromDate`/`pToDate` để trống → lấy toàn bộ lịch sử theo phân trang.
+- **Parse:** mỗi `<tr>` lấy `ticker`, `title`, `published_at`, `article_id` từ `onclick` (`funcViewDetailArticlesByID` / `ShowFileAttach`) hoặc `data-*`.
+- **Dừng crawl:** trang trả về 0 dòng hợp lệ, hoặc đạt `HNX_CRAWL_MAX_LIST_PAGES`.
+
+**Bước 2 — File PDF đính kèm (theo `article_id`)**
+
+- **URL:** `POST https://www.hnx.vn/ModuleArticles/ArticlesCPEtfs/ArticlesFileAttach`
+- **Body:** `pArticlesID=<article_id>`
+- **Parse:** mọi `<a href*="pdf">` → URL tuyệt đối; cache theo `article_id` để không gọi lại cùng bài.
+- **Lọc sớm (attachment):** keyword trên `attachment_name` + `title` + `url_pdf` (xem [Tóm Tắt Logic Lọc](#tóm-tắt-logic-lọc-hiện-tại-crawldownload-bctc-pdf)).
+
+**Bước 3 — Download**
+
+- `download_pdf_to_path`: stream → `<doc_id>.pdf.part`, resume `Range`, retry/backoff, kiểm tra header `%PDF-`, `Content-Length`, tối thiểu `min_pdf_bytes` (mặc định 20 000).
+- Rate limit chung: `rate_limit_rpm=10` (crawl + download).
+
+### Lấy bao nhiêu / giới hạn
+
+| Tham số | Mặc định | Ý nghĩa |
+|---------|----------|---------|
+| `HNX_CRAWL_MAX_LIST_PAGES` | `500` (cap) | Số trang danh sách tối đa; notebook manager đặt `100` |
+| `HNX_RESUME_FROM_STATE` | tắt | `1` → đọc `data-lake/raw/Semi_Structure_Data/_state/hnx_crawl_state.json`, tiếp tục từ `last_success_page + 1` |
+| `cfg.tickers` | `[]` (tất cả) | Lọc sau crawl; nếu **1** ticker → gửi luôn `pMaChungKhoan` lên HNX |
+| `rate_limit_rpm` | `10` | Giới hạn request/phút |
+| `api_retry_max_attempts` | `4` | Retry POST list/attach |
+| `download_retry_max_attempts` | `3` | Retry tải PDF |
+| `request_timeout_sec` | `45` | Timeout HTTP |
+
+**Số lượng bản ghi** không cố định: phụ thuộc số trang HNX trả về × số PDF/bài × lọc keyword. Mỗi URL PDF hợp lệ = 1 dòng metadata; download chỉ áp dụng subset sau classifier (mặc định BCTC VI).
+
+### Nguồn bổ sung (offline / thủ công)
+
+- **`hnx_sample.json`:** mảng `records`/`items` hoặc list object `{ticker, title, url_pdf, ...}` — dùng khi dev không crawl được HNX hoặc cần case test.
+- **`hnx_urls.csv`:** cột `url_pdf` (bắt buộc), tùy chọn `ticker`, `title`, `published_at`, `year`, `url_detail`. Nếu thiếu `title`, tự sinh từ ticker/year.
+
+Hai file này **không** thay crawl live; chỉ **bổ sung** URL sau khi dedupe.
+
+### Điều phối qua notebook
+
+[`ingestion/ingest_bctc_pdf_manager.ipynb`](../ingest_bctc_pdf_manager.ipynb):
+
+1. Setup UTF-8 + `sys.path` về repo root.
+2. (Tuỳ chọn) `HNX_CRAWL_MAX_LIST_PAGES=100`, `.env` cho SSL.
+3. `SemiStructuredIngestionConfig(sources=["hnx"], hnx_verify_ssl=False, strict_bctc_annual_keyword_filter=False)` — dev: crawl được trên Windows, giữ nhiều PDF để khảo sát.
+4. `run_bctc_annual_pipeline(cfg, include_download=True)` → `ingest_bctc_annual_pdfs`.
+
+Production gợi ý: `hnx_verify_ssl=True` / `HNX_SSL_VERIFY=1`, có thể `strict_bctc_annual_keyword_filter=True` để thu hẹp BCTC năm ngay từ crawler.
+
 ## Luồng Hiện Tại
 
 1. `run_bctc_annual_pipeline` gọi `ingest_bctc_annual_pdfs` khi `include_download=True`.
@@ -121,6 +202,7 @@ Nếu `BCTC_INGEST_ALL_CRAWLED_PDFS=1` (hoặc `ingest_only_financial_statement_
 
 ## File Liên Quan
 
+- [`ingest_bctc_pdf_manager.ipynb`](../ingest_bctc_pdf_manager.ipynb): notebook chạy pipeline (config env + `run_bctc_annual_pipeline`).
 - `pipeline.py`: điều phối luồng download-only.
 - `bctc_annual_pdf_ingestor.py`: crawl + classify + download + ghi metadata.
 - `providers/hnx_disclosure_provider.py`: provider HNX.

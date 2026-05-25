@@ -1,0 +1,24 @@
+# Root launcher so `dbt run --profiles-dir transform/dbt` works from repo root.
+# The dbt source tree remains under transform/dbt/.
+name: stock_pipeline
+version: "1.0.0"
+config-version: 2
+
+profile: stock_pipeline
+
+model-paths: ["transform/dbt/models"]
+test-paths: ["transform/dbt/tests"]
+macro-paths: ["transform/dbt/macros"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  stock_pipeline:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: table
+    marts:
+      +materialized: table

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import glob
+import json
 import logging
 import math
 from datetime import date, datetime
@@ -26,6 +27,8 @@ DATASET_ORDER = [
     "company",
     "financial_ratio",
     "price_board",
+    "news",
+    "bctc_pdf_meta",
 ]
 
 DATASET_CONFIG: dict[str, dict[str, Any]] = {
@@ -241,6 +244,120 @@ DATASET_CONFIG: dict[str, dict[str, Any]] = {
         "timestamp_cols": ["snapshot_at"],
         "text_cols": ["symbol", "exchange", "source", "run_partition", "source_file"],
     },
+    "news": {
+        "glob": "data-lake/silver/news/**/*.parquet",
+        "table": "silver.news",
+        "key_cols": ["article_id"],
+        "columns": [
+            "article_id",
+            "source",
+            "ticker",
+            "ticker_mentions",
+            "title",
+            "summary",
+            "body_text",
+            "url",
+            "published_at",
+            "published_date",
+            "fetched_at",
+            "language",
+            "word_count",
+            "sentiment_score",
+            "sentiment_label",
+            "sentiment_method",
+            "raw_ref",
+            "run_partition",
+            "source_file",
+            "silver_loaded_at",
+        ],
+        "date_cols": ["published_date", "run_partition"],
+        "timestamp_cols": ["published_at", "fetched_at", "silver_loaded_at"],
+        "text_cols": [
+            "article_id",
+            "source",
+            "ticker",
+            "title",
+            "summary",
+            "body_text",
+            "url",
+            "language",
+            "sentiment_label",
+            "sentiment_method",
+            "source_file",
+        ],
+        "array_cols": ["ticker_mentions"],
+        "json_cols": ["raw_ref"],
+        "unique_non_null_cols": ["url"],
+        "dedupe_on_load": True,
+        "dedupe_sort_cols": ["run_partition", "silver_loaded_at", "published_at", "fetched_at"],
+    },
+    "bctc_pdf_meta": {
+        "glob": "data-lake/silver/bctc_pdf_meta/**/*.parquet",
+        "table": "silver.bctc_pdf_meta",
+        "key_cols": ["doc_id"],
+        "columns": [
+            "doc_id",
+            "source",
+            "ticker",
+            "year",
+            "period_key",
+            "title",
+            "normalized_title",
+            "published_at",
+            "url_pdf",
+            "url_detail",
+            "pdf_path",
+            "file_size",
+            "sha256",
+            "pdf_valid_header",
+            "qc_pass",
+            "status",
+            "error",
+            "doc_class",
+            "language",
+            "is_consolidated",
+            "is_explanation",
+            "is_disclosure",
+            "canonical_priority",
+            "keep_for_parse",
+            "display_status",
+            "is_available_for_web",
+            "run_partition",
+            "source_file",
+            "silver_loaded_at",
+        ],
+        "date_cols": ["run_partition"],
+        "timestamp_cols": ["published_at", "silver_loaded_at"],
+        "text_cols": [
+            "doc_id",
+            "source",
+            "ticker",
+            "period_key",
+            "title",
+            "normalized_title",
+            "url_pdf",
+            "url_detail",
+            "pdf_path",
+            "sha256",
+            "status",
+            "error",
+            "doc_class",
+            "language",
+            "source_file",
+        ],
+        "bool_cols": [
+            "pdf_valid_header",
+            "qc_pass",
+            "is_consolidated",
+            "is_explanation",
+            "is_disclosure",
+            "keep_for_parse",
+            "is_available_for_web",
+        ],
+        "unique_non_null_cols": ["url_pdf"],
+        "dedupe_on_load": True,
+        "dedupe_sort_cols": ["run_partition", "silver_loaded_at", "published_at"],
+    },
 }
 
 
@@ -261,6 +378,93 @@ def _text_or_none(value: Any) -> str | None:
     if _is_nullish(value):
         return None
     return str(value)
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if _is_nullish(value):
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "t", "yes", "y"}:
+        return True
+    if text in {"0", "false", "f", "no", "n"}:
+        return False
+    return bool(value)
+
+
+def _array_or_none(value: Any) -> list[str] | None:
+    if _is_nullish(value):
+        return None
+    if isinstance(value, np.ndarray):
+        values = value.tolist()
+    elif isinstance(value, (list, tuple, set, pd.Series)) or (
+        pd.api.types.is_list_like(value) and not isinstance(value, (str, bytes, dict))
+    ):
+        values = list(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text or text.lower() in {"nan", "none", "null", "<na>"}:
+            return None
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            values = [text]
+        else:
+            values = parsed if isinstance(parsed, list) else [parsed]
+    else:
+        values = [value]
+
+    out: list[str] = []
+    for item in values:
+        if _is_nullish(item):
+            continue
+        text = str(item).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _json_safe(value: Any) -> Any:
+    if _is_nullish(value):
+        return None
+    if isinstance(value, np.ndarray):
+        return [_json_safe(item) for item in value.tolist()]
+    if isinstance(value, dict):
+        return {str(key): _json_safe(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return None if math.isnan(float(value)) else float(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, (str, int, bool)) or value is None:
+        return value
+    if isinstance(value, float):
+        return None if math.isnan(value) else value
+    return str(value)
+
+
+def _json_or_none(value: Any) -> Any:
+    if _is_nullish(value):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text.lower() in {"nan", "none", "null", "<na>"}:
+            return None
+        try:
+            return _json_safe(json.loads(text))
+        except json.JSONDecodeError:
+            return {"raw": text}
+    return _json_safe(value)
 
 
 def _object_with_none(series: pd.Series) -> pd.Series:
@@ -284,6 +488,37 @@ def _to_python(value: Any) -> Any:
     return value
 
 
+def _to_db_value(value: Any, column: str, json_cols: set[str]) -> Any:
+    py_value = _to_python(value)
+    if column in json_cols and py_value is not None:
+        return pg_extras.Json(py_value)
+    return py_value
+
+
+def _dedupe_for_load(
+    df: pd.DataFrame,
+    dataset: str,
+    key_cols: list[str],
+    cfg: dict[str, Any],
+) -> pd.DataFrame:
+    if not cfg.get("dedupe_on_load", False):
+        return df
+    sort_cols = [col for col in cfg.get("dedupe_sort_cols", []) if col in df.columns]
+    out = df
+    if sort_cols:
+        out = out.sort_values(sort_cols, kind="stable", na_position="first")
+    duplicate_key = out.duplicated(subset=key_cols)
+    if duplicate_key.any():
+        LOGGER.info(
+            "[%s] Dropping %s duplicate key rows before load: %s",
+            dataset,
+            int(duplicate_key.sum()),
+            key_cols,
+        )
+        out = out.drop_duplicates(subset=key_cols, keep="last")
+    return out.reset_index(drop=True)
+
+
 def _validate_key_quality(df: pd.DataFrame, dataset: str, key_cols: list[str]) -> None:
     missing = [col for col in key_cols if col not in df.columns]
     if missing:
@@ -300,6 +535,22 @@ def _validate_key_quality(df: pd.DataFrame, dataset: str, key_cols: list[str]) -
         )
 
 
+def _validate_unique_non_null(
+    df: pd.DataFrame,
+    dataset: str,
+    columns: list[str],
+) -> None:
+    for column in columns:
+        if column not in df.columns:
+            raise ValueError(f"[{dataset}] Missing unique column: {column}")
+        values = df[column].dropna()
+        if values.duplicated().any():
+            raise ValueError(
+                f"[{dataset}] Found {int(values.duplicated().sum())} duplicate "
+                f"non-null values: {column}"
+            )
+
+
 def prepare_dataframe(df: pd.DataFrame, dataset: str) -> pd.DataFrame:
     if dataset not in DATASET_CONFIG:
         raise ValueError(f"Unsupported dataset: {dataset}")
@@ -310,6 +561,9 @@ def prepare_dataframe(df: pd.DataFrame, dataset: str) -> pd.DataFrame:
     date_cols = set(cfg.get("date_cols", []))
     timestamp_cols = set(cfg.get("timestamp_cols", []))
     text_cols = set(cfg.get("text_cols", []))
+    bool_cols = set(cfg.get("bool_cols", []))
+    array_cols = set(cfg.get("array_cols", []))
+    json_cols = set(cfg.get("json_cols", []))
 
     missing_keys = [col for col in key_cols if col not in df.columns]
     if missing_keys:
@@ -330,6 +584,12 @@ def prepare_dataframe(df: pd.DataFrame, dataset: str) -> pd.DataFrame:
             out[column] = _object_with_none(parsed)
         elif column in text_cols:
             out[column] = out[column].map(_text_or_none).astype(object)
+        elif column in bool_cols:
+            out[column] = out[column].map(_bool_or_none).astype(object)
+        elif column in array_cols:
+            out[column] = out[column].map(_array_or_none).astype(object)
+        elif column in json_cols:
+            out[column] = out[column].map(_json_or_none).astype(object)
         elif pd.api.types.is_extension_array_dtype(out[column]):
             out[column] = _object_with_none(out[column])
         elif pd.api.types.is_float_dtype(out[column]):
@@ -345,7 +605,9 @@ def prepare_dataframe(df: pd.DataFrame, dataset: str) -> pd.DataFrame:
         for column in ("year", "quarter"):
             out[column] = out[column].map(_to_python).astype(object)
 
+    out = _dedupe_for_load(out, dataset, key_cols, cfg)
     _validate_key_quality(out, dataset, key_cols)
+    _validate_unique_non_null(out, dataset, list(cfg.get("unique_non_null_cols", [])))
     return out
 
 
@@ -362,6 +624,7 @@ def upsert_table(
     df: pd.DataFrame,
     key_cols: list[str],
     batch_size: int = 2000,
+    json_cols: list[str] | None = None,
 ) -> dict[str, int]:
     if pg_extras is None or pg_sql is None:
         raise ImportError(
@@ -372,6 +635,7 @@ def upsert_table(
         return {"rows_read": 0, "rows_inserted": 0, "rows_updated": 0}
 
     columns = list(df.columns)
+    json_col_set = set(json_cols or [])
     update_cols = [column for column in columns if column not in key_cols]
     if not update_cols:
         raise ValueError(f"[{table}] No non-key columns available for update")
@@ -405,7 +669,10 @@ def upsert_table(
         for start in range(0, len(df), batch_size):
             batch = df.iloc[start : start + batch_size]
             records = [
-                tuple(_to_python(value) for value in row)
+                tuple(
+                    _to_db_value(value, column, json_col_set)
+                    for column, value in zip(columns, row, strict=True)
+                )
                 for row in batch.itertuples(index=False, name=None)
             ]
             results = pg_extras.execute_values(
@@ -490,7 +757,13 @@ def load_dataset(conn, dataset: str) -> bool:
         LOGGER.info("[%s] Read %s rows from %s parquet files", dataset, len(raw_df), len(files))
         prepared = prepare_dataframe(raw_df, dataset)
         run_partition = _run_partition_for_audit(prepared)
-        result = upsert_table(conn, cfg["table"], prepared, list(cfg["key_cols"]))
+        result = upsert_table(
+            conn,
+            cfg["table"],
+            prepared,
+            list(cfg["key_cols"]),
+            json_cols=list(cfg.get("json_cols", [])),
+        )
         rows_read = result["rows_read"]
         rows_inserted = result["rows_inserted"]
         rows_updated = result["rows_updated"]

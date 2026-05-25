@@ -161,6 +161,131 @@ def test_price_board_date_and_timestamp_columns():
     )
 
 
+def test_news_special_columns_and_dates():
+    frame = pd.DataFrame(
+        {
+            "article_id": ["a1", "a2"],
+            "source": ["cafef_html", "vietstock_rss"],
+            "ticker": ["FPT", None],
+            "ticker_mentions": [["FPT", "VNM"], pd.array(["HPG"], dtype="string")],
+            "title": ["Article 1", "Article 2"],
+            "summary": ["Summary 1", ""],
+            "body_text": ["Full body", None],
+            "url": ["https://example.com/a1", "https://example.com/a2"],
+            "published_at": pd.to_datetime(
+                ["2026-05-19T09:00:00Z", "2026-05-19T10:00:00Z"],
+                utc=True,
+            ),
+            "published_date": [date(2026, 5, 19), "2026-05-19"],
+            "fetched_at": pd.to_datetime(["2026-05-19T11:00:00Z"] * 2, utc=True),
+            "language": ["vi", "vi"],
+            "word_count": pd.array([100, 20], dtype="Int64"),
+            "sentiment_score": pd.array([1, 0], dtype="Int64"),
+            "sentiment_label": ["positive", "neutral"],
+            "sentiment_method": ["keyword_v1", "keyword_v1"],
+            "raw_ref": ['{"feed": "cafef"}', {"feed": "vietstock"}],
+            "run_partition": ["2026-05-19", "2026-05-19"],
+            "source_file": ["news.parquet", "news.parquet"],
+            "silver_loaded_at": pd.to_datetime(["2026-05-23T14:30:33Z"] * 2, utc=True),
+        }
+    )
+
+    df = prepare_dataframe(frame, "news")
+
+    assert df["published_date"].iloc[0] == date(2026, 5, 19)
+    assert df["run_partition"].iloc[0] == date(2026, 5, 19)
+    assert df["ticker_mentions"].iloc[0] == ["FPT", "VNM"]
+    assert df["ticker_mentions"].iloc[1] == ["HPG"]
+    assert df["raw_ref"].iloc[0] == {"feed": "cafef"}
+    assert df["raw_ref"].iloc[1] == {"feed": "vietstock"}
+
+
+def test_news_duplicate_article_keeps_latest_partition():
+    frame = pd.DataFrame(
+        {
+            "article_id": ["same", "same"],
+            "title": ["old", "new"],
+            "url": ["https://example.com/same", "https://example.com/same"],
+            "ticker_mentions": [[], []],
+            "raw_ref": ["{}", "{}"],
+            "published_date": ["2026-05-19", "2026-05-20"],
+            "run_partition": ["2026-05-19", "2026-05-20"],
+            "silver_loaded_at": pd.to_datetime(
+                ["2026-05-23T01:00:00Z", "2026-05-24T01:00:00Z"],
+                utc=True,
+            ),
+        }
+    )
+
+    df = prepare_dataframe(frame, "news")
+
+    assert len(df) == 1
+    assert df["title"].iloc[0] == "new"
+    assert df["run_partition"].iloc[0] == date(2026, 5, 20)
+
+
+def test_news_duplicate_url_with_different_article_raises():
+    frame = pd.DataFrame(
+        {
+            "article_id": ["a1", "a2"],
+            "title": ["one", "two"],
+            "url": ["https://example.com/same", "https://example.com/same"],
+            "ticker_mentions": [[], []],
+            "raw_ref": ["{}", "{}"],
+            "run_partition": ["2026-05-19", "2026-05-19"],
+        }
+    )
+
+    with pytest.raises(ValueError, match="duplicate non-null values: url"):
+        prepare_dataframe(frame, "news")
+
+
+def test_bctc_pdf_meta_dates_and_bool_columns():
+    frame = pd.DataFrame(
+        {
+            "doc_id": ["d1", "d2"],
+            "source": ["hnx", "hnx"],
+            "ticker": ["AAA", "BBB"],
+            "year": pd.array([2026, 2026], dtype="Int64"),
+            "period_key": ["Q1", "ANNUAL"],
+            "title": ["BCTC Q1", "BCTC annual"],
+            "normalized_title": ["bctc q1", "bctc annual"],
+            "published_at": pd.to_datetime(
+                ["2026-05-14T01:00:00Z", "2026-05-15T01:00:00Z"],
+                utc=True,
+            ),
+            "url_pdf": ["https://example.com/d1.pdf", "https://example.com/d2.pdf"],
+            "url_detail": ["https://example.com", "https://example.com"],
+            "pdf_path": ["d1.pdf", "d2.pdf"],
+            "file_size": pd.array([1000, 0], dtype="Int64"),
+            "sha256": ["abc", None],
+            "pdf_valid_header": pd.array([True, False], dtype="boolean"),
+            "qc_pass": pd.array([True, False], dtype="boolean"),
+            "status": ["downloaded", "skipped_ingest_filter"],
+            "error": [None, "skipped_doc_class:disclosure"],
+            "doc_class": ["financial_statement_separate", "disclosure"],
+            "language": ["VI", "VI"],
+            "is_consolidated": pd.array([False, False], dtype="boolean"),
+            "is_explanation": pd.array([False, False], dtype="boolean"),
+            "is_disclosure": pd.array([False, True], dtype="boolean"),
+            "canonical_priority": pd.array([2, 99], dtype="Int64"),
+            "keep_for_parse": pd.array([True, False], dtype="boolean"),
+            "display_status": ["available", "skipped"],
+            "is_available_for_web": pd.array([True, False], dtype="boolean"),
+            "run_partition": ["2026-05-14", "2026-05-14"],
+            "source_file": ["bctc.parquet", "bctc.parquet"],
+            "silver_loaded_at": pd.to_datetime(["2026-05-18T08:37:26Z"] * 2, utc=True),
+        }
+    )
+
+    df = prepare_dataframe(frame, "bctc_pdf_meta")
+
+    assert df["run_partition"].iloc[0] == date(2026, 5, 14)
+    assert isinstance(df["is_explanation"].iloc[0], bool)
+    assert isinstance(df["is_disclosure"].iloc[1], bool)
+    assert isinstance(df["is_available_for_web"].iloc[0], bool)
+
+
 def test_dataset_config_has_required_keys_and_columns():
     required = {"glob", "table", "key_cols", "columns", "date_cols", "timestamp_cols", "text_cols"}
 
@@ -171,6 +296,8 @@ def test_dataset_config_has_required_keys_and_columns():
         "company",
         "financial_ratio",
         "price_board",
+        "news",
+        "bctc_pdf_meta",
     }
     for dataset, cfg in DATASET_CONFIG.items():
         assert not (required - set(cfg)), dataset
@@ -186,6 +313,8 @@ def test_parse_datasets_all():
         "company",
         "financial_ratio",
         "price_board",
+        "news",
+        "bctc_pdf_meta",
     ]
 
 

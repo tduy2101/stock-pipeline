@@ -13,7 +13,7 @@ Tài liệu mô tả **cụ thể** luồng lấy và lưu tin tức trong `inge
 | `html_list_adapter.py` | Tải trang list HTML, `BeautifulSoup` + `link_css` lấy link; tùy chọn tải từng trang chi tiết theo CSS trong `detail`. |
 | `schema.py` | Cột chuẩn `NEWS_COLUMNS`, chuẩn hóa URL/datetime/text, `compute_article_id`, regex ticker, `dedupe_news`, `validate_news_df`. |
 | `validate.py` | Re-export `validate_news_df` cho import gọn. |
-| `_smoke_test_news.py` | Script chạy thử nhanh (đọc env `NEWS_RATE_LIMIT_RPM`, gọi `ingest_news`, in đường dẫn và số dòng). |
+
 
 ## 2. Điểm vào và output
 
@@ -68,7 +68,7 @@ flowchart TD
    - `_filter_days_back(df, days_back, strict=cfg.strict_published_at_days_back)`:
      - **strict=False** (mặc định): giữ dòng có `published_at` null **hoặc** ≥ cutoff; `days_back <= 0` → không lọc theo thời gian.
      - **strict=True**: bỏ `published_at` null; chỉ giữ bài ≥ cutoff khi `days_back > 0`.
-   - `dedupe_news`: `drop_duplicates` theo `article_id`, giữ bản đầu.
+   - `dedupe_news`: `drop_duplicates` theo `source` + `article_id`, giữ bản đầu trong cùng nguồn.
    - `validate_news_df`: có lỗi → `ValueError` kèm danh sách issue.
    - `save_news` → thêm key category (đường dẫn parquet) và `row_counts[category]`.
 
@@ -83,7 +83,7 @@ flowchart TD
   - `source`: nếu có `label` trong spec → `{label}_rss` (chữ thường, khoảng trắng → `_`); không thì `rss_{hostname_underscore}`.
   - Giới hạn số entry: `rss_max_per_feed` hoặc `max_articles_per_source` (tối thiểu 1), lấy `entries[:max_per]`.
   - Mỗi entry: lấy `title`, `url` (normalize), bỏ nếu thiếu một trong hai; `summary` từ summary/description (strip HTML); `body_text` từ `content` nếu có (list dict hoặc chuỗi); `published_at` từ nhiều field RSS phổ biến; `ticker` = `infer_ticker` trên title/summary/body; `article_id` = SHA-256 của URL đã chuẩn hóa (hoặc fallback metadata nếu không có URL hợp lệ); `language` cố định `"vi"`; `raw_ref` = JSON toàn bộ object entry.
-- Cuối nhánh: `dedupe_news` trên toàn bộ dòng từ mọi feed.
+- Cuối nhánh: `dedupe_news` trên toàn bộ dòng từ mọi feed, nhưng chỉ gộp trùng khi cùng `source` + `article_id`.
 
 ## 6. Nhánh HTML (`html_list_adapter.py`)
 
@@ -98,7 +98,7 @@ flowchart TD
 - Nếu **không** có `detail`: chỉ có title + URL từ list, summary/body/published_at để trống/null.
 - `ticker`, `article_id`, `language`, `raw_ref` (metadata list + href + css + detail config) tương tự RSS.
 - Log: số anchor, số detail thành công, số dòng thêm.
-- Cuối nhánh: `dedupe_news` trên toàn bộ nguồn HTML.
+- Cuối nhánh: `dedupe_news` trên toàn bộ nguồn HTML, nhưng chỉ gộp trùng khi cùng `source` + `article_id`.
 
 ## 7. Schema và kiểm tra chất lượng (`schema.py`)
 
@@ -110,6 +110,8 @@ flowchart TD
 - `normalize_url`: bổ sung scheme, host lowercase, bỏ slash cuối path (trừ `/`), query sort, loại tham số `utm_*`.
 - `article_id`: SHA-256 của URL chuẩn; nếu không có URL hợp lệ thì hash nối `source|published_at|ticker|title`.
 - Ticker: regex word-boundary trên tập mã (ưu tiên mã dài hơn trước).
+- Dedupe Bronze: chỉ chống trùng trong cùng `source`; cùng `article_id` nhưng khác `source` vẫn được giữ để Silver quyết định hợp nhất RSS/HTML.
+- Phân biệt ticker: Bronze `ticker` là mã đầu tiên infer được lúc crawl; Silver `ticker_mentions` mới là danh sách đầy đủ các mã match lại từ title/summary/body bằng listing master.
 
 **`validate_news_df`** (sau filter + dedupe):
 

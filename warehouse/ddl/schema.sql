@@ -234,6 +234,7 @@ CREATE TABLE IF NOT EXISTS silver.bctc_pdf_meta (
   year int,
   period_key text,
   title text,
+  normalized_title text,
   published_at timestamptz,
   url_pdf text,
   url_detail text,
@@ -247,47 +248,25 @@ CREATE TABLE IF NOT EXISTS silver.bctc_pdf_meta (
   doc_class text,
   language text,
   is_consolidated boolean,
+  is_explanation boolean,
+  is_disclosure boolean,
+  canonical_priority int,
   keep_for_parse boolean,
+  display_status text,
+  is_available_for_web boolean,
   run_partition date,
   source_file text,
+  silver_loaded_at timestamptz,
   loaded_at timestamptz NOT NULL DEFAULT now()
 );
-
-CREATE TABLE IF NOT EXISTS silver.bctc_facts (
-  doc_id text NOT NULL REFERENCES silver.bctc_pdf_meta(doc_id),
-  ticker text NOT NULL,
-  fiscal_year int NOT NULL,
-  period text NOT NULL DEFAULT 'ANNUAL',
-  statement text,
-  metric_code text NOT NULL,
-  metric_name text NOT NULL,
-  metric_value numeric(24,4),
-  unit text DEFAULT 'VND',
-  page_number int,
-  confidence numeric(5,4),
-  parser_version text NOT NULL,
-  raw_context text,
-  extracted_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (doc_id, fiscal_year, period, metric_code)
-);
-
-CREATE TABLE IF NOT EXISTS silver.price_indicator (
-  ticker text NOT NULL,
-  trading_date date NOT NULL,
-  ma7 numeric(18,4),
-  ma20 numeric(18,4),
-  ma50 numeric(18,4),
-  rsi14 numeric(10,4),
-  macd_line numeric(18,4),
-  macd_signal numeric(18,4),
-  macd_hist numeric(18,4),
-  bb_middle numeric(18,4),
-  bb_upper numeric(18,4),
-  bb_lower numeric(18,4),
-  calculated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (ticker, trading_date)
-);
-SELECT create_hypertable('silver.price_indicator', 'trading_date', if_not_exists => TRUE);
+ALTER TABLE IF EXISTS silver.bctc_pdf_meta ADD COLUMN IF NOT EXISTS normalized_title text;
+ALTER TABLE IF EXISTS silver.bctc_pdf_meta ADD COLUMN IF NOT EXISTS is_explanation boolean;
+ALTER TABLE IF EXISTS silver.bctc_pdf_meta ADD COLUMN IF NOT EXISTS is_disclosure boolean;
+ALTER TABLE IF EXISTS silver.bctc_pdf_meta ADD COLUMN IF NOT EXISTS canonical_priority int;
+ALTER TABLE IF EXISTS silver.bctc_pdf_meta ADD COLUMN IF NOT EXISTS display_status text;
+ALTER TABLE IF EXISTS silver.bctc_pdf_meta ADD COLUMN IF NOT EXISTS is_available_for_web boolean;
+ALTER TABLE IF EXISTS silver.bctc_pdf_meta ADD COLUMN IF NOT EXISTS silver_loaded_at timestamptz;
+CREATE UNIQUE INDEX IF NOT EXISTS silver_bctc_pdf_meta_url_pdf_uq ON silver.bctc_pdf_meta(url_pdf) WHERE url_pdf IS NOT NULL;
 
 -- ============================================================
 -- GOLD
@@ -339,3 +318,51 @@ CREATE TABLE IF NOT EXISTS gold.mart_company_profile (
   sentiment_30d numeric(10,4),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- ============================================================
+-- FUTURE SCOPE / DEPRECATED - Not used in the MVP pipeline
+-- The tables below may exist in an older local DB, but the main
+-- pipeline must not load or query them. See MEDALLION_PLAN.md.
+-- ============================================================
+
+-- silver.price_indicator:
+--   Correct role: dbt intermediate model int_price_indicator.
+--   Do not load from Parquet. Calculate in transform/dbt/models/intermediate/.
+-- CREATE TABLE IF NOT EXISTS silver.price_indicator (
+--   ticker text NOT NULL,
+--   trading_date date NOT NULL,
+--   ma7 numeric(18,4),
+--   ma20 numeric(18,4),
+--   ma50 numeric(18,4),
+--   rsi14 numeric(10,4),
+--   macd_line numeric(18,4),
+--   macd_signal numeric(18,4),
+--   macd_hist numeric(18,4),
+--   bb_middle numeric(18,4),
+--   bb_upper numeric(18,4),
+--   bb_lower numeric(18,4),
+--   calculated_at timestamptz NOT NULL DEFAULT now(),
+--   PRIMARY KEY (ticker, trading_date)
+-- );
+-- SELECT create_hypertable('silver.price_indicator', 'trading_date', if_not_exists => TRUE);
+
+-- silver.bctc_facts:
+--   Correct role: future scope if OCR/PDF parsing produces facts later.
+--   Not part of the MVP. Do not load, query, or expose via API.
+-- CREATE TABLE IF NOT EXISTS silver.bctc_facts (
+--   doc_id text NOT NULL REFERENCES silver.bctc_pdf_meta(doc_id),
+--   ticker text NOT NULL,
+--   fiscal_year int NOT NULL,
+--   period text NOT NULL DEFAULT 'ANNUAL',
+--   statement text,
+--   metric_code text NOT NULL,
+--   metric_name text NOT NULL,
+--   metric_value numeric(24,4),
+--   unit text DEFAULT 'VND',
+--   page_number int,
+--   confidence numeric(5,4),
+--   parser_version text NOT NULL,
+--   raw_context text,
+--   extracted_at timestamptz NOT NULL DEFAULT now(),
+--   PRIMARY KEY (doc_id, fiscal_year, period, metric_code)
+-- );

@@ -1,0 +1,12 @@
+stock_pipeline:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: localhost
+      port: 55432
+      user: stock
+      password: stock
+      dbname: stock_pipeline
+      schema: gold
+      threads: 4

@@ -133,3 +133,13 @@ class NewsIngestionConfig:
         if cleaned:
             return cleaned[: self.max_tickers_per_run]
         return fallback[: self.max_tickers_per_run]
+
+    def resolved_ticker_universe(self) -> frozenset[str]:
+        """Stock symbols for ticker matching (aligned with Silver listing filter)."""
+        from pipeline.silver.ticker_match import load_stock_universe
+
+        if self.use_listing_tickers:
+            universe = load_stock_universe(self.resolved_listing_parquet())
+            if universe:
+                return universe
+        return frozenset(self.resolved_tickers())

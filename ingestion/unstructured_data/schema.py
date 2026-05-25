@@ -147,32 +147,35 @@ def compute_article_id(
 
 
 def build_ticker_regex(tickers: list[str]) -> re.Pattern | None:
-    cleaned: list[str] = []
-    for t in tickers:
-        text = compact_text(t).upper()
-        if not text or text in {"NAN", "NONE", "<NA>"}:
-            continue
-        if len(text) < 2:
-            continue
-        cleaned.append(text)
-    if not cleaned:
-        return None
-    cleaned = sorted(set(cleaned), key=len, reverse=True)
-    pattern = r"(?<![A-Z0-9])(" + "|".join(map(re.escape, cleaned)) + r")(?![A-Z0-9])"
-    return re.compile(pattern)
+    from pipeline.silver.ticker_match import build_ticker_regex as _build
+
+    return _build(tickers)
 
 
 def infer_ticker(texts: list[Any], regex: re.Pattern | None) -> str | None:
+    """Infer primary ticker from text parts using a pre-built regex (legacy API)."""
     if regex is None:
         return None
     for text in texts:
-        raw = compact_text(text).upper()
-        if not raw:
+        folded = _fold_text_for_ticker(text)
+        if not folded:
             continue
-        match = regex.search(raw)
+        match = regex.search(folded)
         if match:
             return match.group(1)
     return None
+
+
+def infer_ticker_with_universe(texts: list[Any], universe: frozenset[str]) -> str | None:
+    from pipeline.silver.ticker_match import infer_ticker_from_texts
+
+    return infer_ticker_from_texts(texts, universe)
+
+
+def _fold_text_for_ticker(text: Any) -> str:
+    from pipeline.silver.ticker_match import fold_for_match
+
+    return fold_for_match(text)
 
 
 def safe_json_dumps(data: Any) -> str:
@@ -187,10 +190,11 @@ def empty_news_frame() -> pd.DataFrame:
 
 
 def dedupe_news(df: pd.DataFrame) -> pd.DataFrame:
+    """Deduplicate only within the same source, preserving cross-source repeats."""
     if df.empty:
         return empty_news_frame()
     out = df.copy()
-    out = out.drop_duplicates(subset=["article_id"], keep="first")
+    out = out.drop_duplicates(subset=["source", "article_id"], keep="first")
     return out[NEWS_COLUMNS].reset_index(drop=True)
 
 

@@ -15,12 +15,11 @@ from ingestion.common import call_with_retry, wait_for_rate_limit
 from .config import NewsIngestionConfig
 from .schema import (
     NEWS_COLUMNS,
-    build_ticker_regex,
     compact_text,
     compute_article_id,
     dedupe_news,
     empty_news_frame,
-    infer_ticker,
+    infer_ticker_with_universe,
     normalize_url,
     parse_datetime_to_iso_utc,
     safe_json_dumps,
@@ -86,9 +85,7 @@ def fetch_rss_news(cfg: NewsIngestionConfig, feed_specs: list[dict[str, str]]) -
     max_per = int(getattr(cfg, "rss_max_per_feed", 0) or cfg.max_articles_per_source)
     max_per = max(1, max_per)
 
-    ticker_re = (
-        build_ticker_regex(cfg.resolved_tickers()) if cfg.enable_ticker_match else None
-    )
+    ticker_universe = cfg.resolved_ticker_universe() if cfg.enable_ticker_match else frozenset()
     session = requests.Session()
     session.headers.update(cfg.http_headers)
 
@@ -140,7 +137,10 @@ def fetch_rss_news(cfg: NewsIngestionConfig, feed_specs: list[dict[str, str]]) -
             elif content:
                 content_value = strip_html(content)
             published_at = _entry_published_at(entry)
-            ticker = infer_ticker([title, summary, content_value], ticker_re)
+            ticker = infer_ticker_with_universe(
+                [title, summary, content_value],
+                ticker_universe,
+            )
             article_id = compute_article_id(
                 url=url,
                 source=source,

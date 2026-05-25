@@ -1,0 +1,6 @@
+base_path: data-lake/
+input_glob: raw/Structure_Data/price_board/snapshot_at=*/PRICE_BOARD_SNAPSHOT.parquet
+output_path: silver/price_board
+partition_col: trading_date
+dedup_key: [symbol, trading_date]
+watermark_col: trading_date

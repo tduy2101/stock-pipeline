@@ -28,8 +28,8 @@ flowchart LR
   subgraph per_ohlcv [Mỗi bước OHLCV]
     R["resolve khoảng ngày"]
     Q["Quote.history + fallback nguồn"]
-    T["transform_ohlcv + validate"]
-    S["save_partition_parquet"]
+    T["operational validate + attach metadata"]
+    S["save_monthly_ticker_parquets"]
     R --> Q --> T --> S
   end
   CFG --> pipe
@@ -40,14 +40,14 @@ flowchart LR
 1. **Cấu hình** (`IngestionConfig` trong `config.py`): danh sách mã, chỉ số, `primary_source` / `fallback_source`, rate limit, cửa sổ incremental, ngưỡng QC, đường dẫn data lake.
 2. **API vnstock**: đăng ký key (`common.register_vnstock_api_key_from_env`), mỗi request qua `wait_for_rate_limit` và `call_with_retry` khi lỗi mạng tạm thời.
 3. **Pipeline** (`pipeline.py`): gọi lần lượt các ingestor, **nghỉ** `delay_between_categories_sec` giữa các nhóm để giảm rate limit / lỗi mạng.
-4. **Ghi dữ liệu**: Parquet dưới `data-lake/raw/Structure_Data/` (partition `date=<run_date>` hoặc thư mục `master` — xem bảng dưới).
+4. **Ghi dữ liệu**: Parquet dưới `data-lake/raw/Structure_Data/`. OHLCV (`price`, `index`) partition theo `year=<YYYY>/month=<MM>`; snapshot khác dùng key snapshot riêng, listing vẫn ở `master`.
 
 ## 1) Tổng quan file trong thư mục
 
 | File | Vai trò |
 |------|---------|
 | `config.py` | `IngestionConfig`: tickers, chỉ số, nguồn, rate limit, backfill/incremental, QC, retry, `data_lake_root` |
-| `common.py` | Rate limit, retry, chuẩn hóa OHLCV, QC số dòng, schema giá/chỉ số, lưu Parquet, nạp `.env`, đăng ký key vnstock |
+| `common.py` | Rate limit, retry, gate vận hành OHLCV, gắn metadata ingest, split/lưu Parquet theo tháng giao dịch, watermark/run metadata, nạp `.env`, đăng ký key vnstock |
 | `price_ingestor.py` | OHLCV cổ phiếu (`Quote.history`) |
 | `index_ingestor.py` | OHLCV chỉ số (cùng pattern với giá) |
 | `stock_info_ingestor.py` | Listing, company overview/profile, financial ratio, price board |
@@ -74,16 +74,20 @@ Mặc định `run_structure_ingestion_pipeline`:
 - **API**: `vnstock.Quote(source=..., symbol=...).history(start, end, interval="1D")`.
 - **Nguồn**: thử theo thứ tự `resolved_data_sources()` — thường `primary_source` rồi `fallback_source` (mặc định `kbs` → `vci`).
 - **Trong một mã**:
-  1. `_resolve_*_fetch_range`: chọn `start`/`end` và `range_mode` (full N năm, incremental N ngày, bootstrap lần đầu, hoặc “full một lần” nếu bật marker).
+  1. `_resolve_*_fetch_range`: chọn `start`/`end` và `range_mode` (full N năm, incremental theo watermark, bootstrap lần đầu, hoặc “full một lần” nếu bật marker).
   2. Gọi API có retry; nếu DataFrame rỗng hoặc **QC không đạt** (`validate_ohlcv_frame` với `min_rows` phụ thuộc full vs incremental) → thử nguồn kế tiếp.
-  3. `build_price_like_schema` + log chất lượng → `save_partition_parquet`.
+  3. `build_price_like_schema` chỉ gắn metadata (`ticker`, `source`, `instrument_type`, `ingested_at`, `fetched_at`) + log chất lượng.
+  4. `save_monthly_ticker_parquets` chuẩn hóa cột ngày đủ để split theo từng tháng giao dịch, rồi ghi đè file của mã đó trong `year=<YYYY>/month=<MM>`.
+  5. Pipeline ghi `_runs/<run_id>.json` cho từng nhóm OHLCV. File `_watermark.json` được đọc để chọn incremental range, nhưng code ingestion hiện tại không tự ghi watermark; watermark được cập nhật sau khi Silver CLI chạy thành công cho `price` hoặc `index_price`.
+
+**Boundary Bronze/Silver**: Structure ingestion chỉ giữ gate vận hành để retry/fallback, gắn metadata tối thiểu và chuẩn hóa `trading_date` ở mức cần cho partition. Khi ghi lại tháng đã có, Bronze có merge/dedupe theo mã + `trading_date` để tránh trùng file tháng, nhưng các biến đổi analytics-ready như ép kiểu OHLCV, derive `value`, `value_is_derived`, `is_suspicious`, uppercase ticker/symbol, compact text, dedupe chuẩn và thứ tự cột chuẩn nằm ở `pipeline/silver/`.
 
 ### Listing / company / financial ratio / price board
 
-- **Listing**: `Listing` (ưu tiên `symbols_by_exchange` với tham số tương thích phiên bản vnstock). Kết quả là **snapshot**: ghi đè file master.
-- **Company**: thử `Company.overview` rồi `profile` theo từng source; thứ tự source ưu tiên KBS trước (giảm lỗi tương thích VCI). **Append** vào master, có metadata lần chạy.
+- **Listing**: `Listing` (ưu tiên `symbols_by_exchange` với tham số tương thích phiên bản vnstock). Kết quả là raw-ish **snapshot**: ghi đè file master; filter stock, cleanup exchange/symbol và dedupe nằm ở Silver.
+- **Company**: thử `Company.overview` rồi `profile` theo từng source; thứ tự source ưu tiên KBS trước (giảm lỗi tương thích VCI). Ghi snapshot theo `snapshot_date=<run_date>`; compact text, ép kiểu và current dedupe nằm ở Silver.
 - **Financial ratio**: `Finance.ratio`; có retry và tùy chọn tắt nguồn khi lỗi transient / abort sau N lỗi liên tiếp (theo field trong `IngestionConfig`).
-- **Price board**: `Trading.price_board` → một file snapshot theo partition ngày chạy.
+- **Price board**: `Trading.price_board` → một file snapshot theo partition timestamp chạy.
 
 ## 4) Dữ liệu lấy và output
 
@@ -91,13 +95,22 @@ Mặc định `run_structure_ingestion_pipeline`:
 
 - API: `vnstock.Quote.history`
 - Output:
-  - `data-lake/raw/Structure_Data/price/date=<run_date>/<TICKER>.parquet`
+  - `data-lake/raw/Structure_Data/price/year=<YYYY>/month=<MM>/<TICKER>.parquet`
+  - `data-lake/raw/Structure_Data/price/_runs/<run_id>.json`
 
 ### B) Chỉ số (VNINDEX/VN30/HNX...)
 
 - API: `vnstock.Quote.history`
 - Output:
-  - `data-lake/raw/Structure_Data/index/date=<run_date>/<INDEX_CODE>.parquet`
+  - `data-lake/raw/Structure_Data/index/year=<YYYY>/month=<MM>/<INDEX_CODE>.parquet`
+  - `data-lake/raw/Structure_Data/index/_runs/<run_id>.json`
+
+### Bổ sung metadata OHLCV
+
+- Watermark chung cho raw Structure OHLCV:
+  - `data-lake/raw/Structure_Data/_watermark.json`
+- `_watermark.json` được dùng trong `_resolve_*_fetch_range` cùng watermark từ Silver/Gold để chọn khoảng incremental. Với code hiện tại, file này được cập nhật bởi `pipeline.silver.cli` sau khi transform `price` hoặc `index_price` thành công, không phải bởi riêng notebook/crawler ingestion.
+- `_runs/<run_id>.json` ghi `run_type`, `ingested_at`, `trading_date_from`, `trading_date_to`, `tickers`, `row_count`, `status`.
 
 ### C) Listing
 
@@ -108,39 +121,43 @@ Mặc định `run_structure_ingestion_pipeline`:
 ### D) Company overview
 
 - API: `vnstock.Company.overview` / `profile`
-- Output (**append**, giữ lịch sử các lần chạy):
-  - `data-lake/raw/Structure_Data/company/master/company_overview.parquet`
-  - Cột/metadata thêm: `snapshot_date`, `ingest_run_id`, `source`
+- Output (**snapshot**, ghi đè nếu cùng `snapshot_date`):
+  - `data-lake/raw/Structure_Data/company/snapshots/snapshot_date=<run_date>/company_overview.parquet`
+  - Cột/metadata thêm: `snapshot_date`, `fetched_at`, `source`, `company_method`
 
 ### E) Financial ratio
 
 - API: `vnstock.Finance.ratio` (period `quarter`/`year` theo code ingestor)
 - Output:
-  - `data-lake/raw/Structure_Data/financial_ratio/date=<run_date>/<TICKER>.parquet`
+  - `data-lake/raw/Structure_Data/financial_ratio/snapshot_date=<run_date>/<TICKER>.parquet`
 
 ### F) Price board snapshot
 
 - API: `vnstock.Trading.price_board`
 - Output:
-  - `data-lake/raw/Structure_Data/price_board/date=<run_date>/PRICE_BOARD_SNAPSHOT.parquet`
+  - `data-lake/raw/Structure_Data/price_board/snapshot_at=<run_datetime>/PRICE_BOARD_SNAPSHOT.parquet`
 
-**Ghi chú `run_date`**: lấy từ `IngestionConfig.run_partition` nếu set, không thì `date.today().isoformat()`. Notebook manager thường set `run_partition` = timestamp mỗi lần chạy để tách partition giống một “DAG run”.
+**Ghi chú `run_date`**: lấy từ `IngestionConfig.run_partition` nếu set, không thì `date.today().isoformat()`. Với `price`/`index`, giá trị này là `run_id`/metadata ingest, không còn là partition chính. Với `financial_ratio` và `company`, `run_date` là `snapshot_date`; `price_board` dùng `snapshot_at=<run_datetime>`.
 
 ## 5) Cơ chế Initial Load vs Incremental (OHLCV)
 
 ### Initial Load (full history)
 
 - Khi `use_incremental_window=False`, hoặc
-- Chưa có file parquet trước đó cho mã đó (trong mọi `date=*/`) và `bootstrap_full_history_if_missing=True`
+- Chưa có file parquet trước đó cho mã đó (trong mọi `year=*/month=*/`) và `bootstrap_full_history_if_missing=True`
 - Khoảng thời gian: từ `start_date` (≈ `years_back` năm) đến `end_date` (hôm nay)
 
 ### Incremental Load
 
 - Khi `use_incremental_window=True`
-- Nếu **đã có** file cho mã đó trong category → chỉ lấy cửa sổ `incremental_window_days` gần nhất
+- Nếu có watermark từ Gold/Silver/raw → lấy từ ngày kế tiếp sau `max(trading_date)` đến `end_date`
+- Nếu chưa có watermark nhưng **đã có** file cho mã đó trong category → fallback về cửa sổ `incremental_window_days` gần nhất
 - QC dùng ngưỡng thấp hơn:
   - `min_ohlcv_rows_stock_incremental`
   - `min_ohlcv_rows_index_incremental`
+- Gate vận hành tự co theo `incremental_window_days`: ví dụ daily
+  incremental 1 ngày chỉ yêu cầu tối thiểu 1 dòng hợp lệ; DQ chi tiết
+  vẫn thuộc Silver.
 
 ### Full bootstrap once then incremental (tùy chọn)
 
@@ -175,6 +192,26 @@ Mặc định `run_structure_ingestion_pipeline`:
 
 | Khu vực | Hành vi |
 |---------|---------|
-| `price/`, `index/`, `financial_ratio/`, `price_board/` theo `date=<run_date>/` | Mỗi lần chạy cùng `run_date`: file tương ứng được **ghi đè** (một mã một file trong partition đó). |
+| `price/`, `index/` theo `year=<YYYY>/month=<MM>/` | Mỗi file chứa toàn bộ rows của một mã/chỉ số trong tháng đó. Nếu overlap, file tháng được merge/dedupe theo mã + `trading_date` rồi **ghi đè**. |
+| `financial_ratio/` theo `snapshot_date=<run_date>/` | Mỗi lần chạy cùng snapshot date: file tương ứng được **ghi đè**. |
+| `price_board/` theo `snapshot_at=<run_datetime>/` | Mỗi snapshot ghi vào partition timestamp riêng. |
+| `Structure_Data/_watermark.json` | Watermark vận hành cho incremental. Ingestion đọc file này; Silver CLI cập nhật file sau khi transform thành công. |
+| `<category>/_runs/<run_id>.json` | Audit run OHLCV do ingestion pipeline ghi. |
 | `listing/master/listing.parquet` | **Ghi đè** snapshot. |
-| `company/master/company_overview.parquet` | **Append** — không xóa lịch sử các lần trước. |
+| `company/snapshots/snapshot_date=<run_date>/company_overview.parquet` | **Ghi đè** snapshot cùng `snapshot_date`; không append master. |
+
+## 9) Bronze sang Silver hiện tại
+
+Structured Silver hiện xử lý đủ 6 dataset từ Bronze structured:
+
+- `price` → `data-lake/silver/price/trading_date=<YYYY-MM-DD>/PART-000.parquet`
+- `index` → `data-lake/silver/index_price/trading_date=<YYYY-MM-DD>/PART-000.parquet`
+- `listing` → `data-lake/silver/listing/current/PART-000.parquet`
+- `company` → `data-lake/silver/company/current/PART-000.parquet`
+- `financial_ratio` → `data-lake/silver/financial_ratio/period_type=<quarter|annual>/year=<YYYY>/PART-000.parquet`
+- `price_board` → `data-lake/silver/price_board/trading_date=<YYYY-MM-DD>/PART-000.parquet`
+
+`financial_ratio` được melt từ dạng wide theo kỳ sang dạng long theo `ticker + item_code + period`.
+`price_board` hiện dùng grain daily latest: dedupe theo `symbol + trading_date`, giữ snapshot mới nhất trong ngày.
+
+Các phần chưa nằm trong structured Silver: load PostgreSQL/TimescaleDB, dbt Gold marts, chỉ báo kỹ thuật Gold và API/frontend đọc Gold.

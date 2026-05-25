@@ -65,10 +65,12 @@ typing_extensions==4.15.0
 tzdata==2025.3
 urllib3==2.6.3
 vnai==2.4.0
-vnstock==3.5.0
+vnstock>=4.0.3
 SQLAlchemy==2.0.43
 psycopg2-binary==2.9.10
 vnstock_ezchart==0.0.3
 wcwidth==0.6.0
 wordcloud==1.9.6
 zipp==3.23.0
+dbt-core==1.11.11
+dbt-postgres==1.10.0

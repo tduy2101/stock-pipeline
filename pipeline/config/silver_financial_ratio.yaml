@@ -1,0 +1,6 @@
+base_path: data-lake/
+input_glob: raw/Structure_Data/financial_ratio/snapshot_date=*/*.parquet
+output_path: silver/financial_ratio
+partition_cols: [period_type, year]
+dedup_key: [ticker, item_code, period]
+watermark_col: snapshot_date

@@ -12,7 +12,9 @@ from .common import (
     build_price_like_schema,
     call_with_retry,
     log_ohlcv_quality,
-    save_partition_parquet,
+    next_date_text,
+    resolve_trading_date_watermark,
+    save_monthly_ticker_parquets,
     transform_ohlcv,
     validate_ohlcv_frame,
     wait_for_rate_limit,
@@ -20,6 +22,7 @@ from .common import (
 from .config import IngestionConfig
 
 LOGGER = logging.getLogger(__name__)
+_WATERMARK_UNSET = object()
 
 
 def _is_full_bootstrap_once_enabled(cfg: IngestionConfig) -> bool:
@@ -67,11 +70,15 @@ def _has_existing_partition_file(
     category_dir = cfg.data_lake_root / category
     if not category_dir.exists():
         return False
-    pattern = f"date=*/{filename.upper()}.parquet"
+    pattern = f"year=*/month=*/{filename.upper()}.parquet"
     return any(category_dir.glob(pattern))
 
 
-def _resolve_price_fetch_range(symbol: str, cfg: IngestionConfig) -> tuple[str, str, str]:
+def _resolve_price_fetch_range(
+    symbol: str,
+    cfg: IngestionConfig,
+    watermark: str | None | object = _WATERMARK_UNSET,
+) -> tuple[str, str, str]:
     end = cfg.end_date
     if not cfg.use_incremental_window:
         return cfg.start_date, end, f"full_{cfg.years_back}y"
@@ -81,6 +88,16 @@ def _resolve_price_fetch_range(symbol: str, cfg: IngestionConfig) -> tuple[str, 
 
     window_days = max(int(cfg.incremental_window_days), 1)
     has_existing = _has_existing_partition_file(cfg, "price", symbol)
+    if watermark is _WATERMARK_UNSET:
+        watermark = resolve_trading_date_watermark(
+            raw_root=cfg.data_lake_root,
+            dataset="price",
+            silver_dataset="price",
+            gold_tables=("gold.fact_price", "gold.mart_stock_daily"),
+        )
+    if watermark and has_existing:
+        return next_date_text(watermark), end, "incremental_watermark"
+
     if has_existing:
         start = (date.today() - timedelta(days=window_days)).isoformat()
         return start, end, f"incremental_{window_days}d"
@@ -101,8 +118,24 @@ def _resolve_price_min_rows(range_mode: str, cfg: IngestionConfig) -> int:
     if range_mode.startswith("incremental_") or range_mode.startswith(
         "bootstrap_incremental_"
     ):
-        return incremental_min_rows
+        window_days = max(1, int(getattr(cfg, "incremental_window_days", 1)))
+        return min(incremental_min_rows, window_days)
     return full_min_rows
+
+
+def _iter_fetch_windows(start: str, end: str) -> list[tuple[str, str]]:
+    start_dt = date.fromisoformat(start)
+    end_dt = date.fromisoformat(end)
+    if (end_dt - start_dt).days <= 366:
+        return [(start, end)]
+
+    windows: list[tuple[str, str]] = []
+    cursor = start_dt
+    while cursor <= end_dt:
+        window_end = min(date(cursor.year, 12, 31), end_dt)
+        windows.append((cursor.isoformat(), window_end.isoformat()))
+        cursor = window_end + timedelta(days=1)
+    return windows
 
 
 def _fetch_history_with_fallback(
@@ -149,42 +182,68 @@ def _fetch_history_with_fallback(
     return pd.DataFrame(), ""
 
 
-def ingest_prices(cfg: IngestionConfig | None = None) -> dict[str, str]:
+def ingest_prices(cfg: IngestionConfig | None = None) -> dict[str, list[str]]:
     cfg = cfg or IngestionConfig()
-    outputs: dict[str, str] = {}
+    outputs: dict[str, list[str]] = {}
     n = min(len(cfg.tickers), cfg.max_tickers_per_run)
+    watermark = resolve_trading_date_watermark(
+        raw_root=cfg.data_lake_root,
+        dataset="price",
+        silver_dataset="price",
+        gold_tables=("gold.fact_price", "gold.mart_stock_daily"),
+    )
     for idx, symbol in enumerate(cfg.tickers[: cfg.max_tickers_per_run]):
-        start, end, range_mode = _resolve_price_fetch_range(symbol, cfg)
+        start, end, range_mode = _resolve_price_fetch_range(symbol, cfg, watermark)
+        if start > end:
+            LOGGER.info(
+                "[%s/%s] Skip %s: watermark is already past end_date (%s > %s)",
+                idx + 1,
+                n,
+                symbol,
+                start,
+                end,
+            )
+            continue
         min_rows_required = _resolve_price_min_rows(range_mode, cfg)
-        LOGGER.info(
-            "[%s/%s] Fetching %s (%s: %s -> %s, qc_min_rows=%s)...",
-            idx + 1,
-            n,
-            symbol,
-            range_mode,
-            start,
-            end,
-            min_rows_required,
-        )
-        cleaned, src = _fetch_history_with_fallback(
-            symbol,
-            start,
-            end,
-            cfg,
-            min_rows_required=min_rows_required,
-        )
-        if cleaned.empty:
+        symbol_files: list[str] = []
+        for window_start, window_end in _iter_fetch_windows(start, end):
+            LOGGER.info(
+                "[%s/%s] Fetching %s (%s: %s -> %s, qc_min_rows=%s)...",
+                idx + 1,
+                n,
+                symbol,
+                range_mode,
+                window_start,
+                window_end,
+                min_rows_required,
+            )
+            cleaned, src = _fetch_history_with_fallback(
+                symbol,
+                window_start,
+                window_end,
+                cfg,
+                min_rows_required=min_rows_required,
+            )
+            if cleaned.empty:
+                LOGGER.warning(
+                    "Skip %s window %s -> %s: không có dữ liệu hợp lệ từ mọi nguồn",
+                    symbol,
+                    window_start,
+                    window_end,
+                )
+                continue
+            final_df = build_price_like_schema(
+                cleaned, symbol, cfg.run_date, source=src, instrument_type="stock"
+            )
+            log_ohlcv_quality(symbol, final_df, src)
+            out_files = save_monthly_ticker_parquets(
+                final_df, cfg.data_lake_root, "price", cfg.run_date, symbol
+            )
+            symbol_files.extend(str(path) for path in out_files)
+        if not symbol_files:
             LOGGER.warning("Skip %s: không có dữ liệu hợp lệ từ mọi nguồn", symbol)
             continue
-        final_df = build_price_like_schema(
-            cleaned, symbol, cfg.run_date, source=src, instrument_type="stock"
-        )
-        log_ohlcv_quality(symbol, final_df, src)
-        out_file = save_partition_parquet(
-            final_df, cfg.data_lake_root, "price", cfg.run_date, symbol
-        )
-        outputs[symbol] = str(out_file)
-
+        outputs[symbol] = symbol_files
     if _is_full_bootstrap_once_enabled(cfg) and not _has_full_bootstrap_marker(cfg, "price"):
         _write_full_bootstrap_marker(
             cfg,

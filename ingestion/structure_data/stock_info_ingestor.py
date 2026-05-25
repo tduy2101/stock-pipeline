@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import logging
 import time
-import uuid
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -15,8 +14,10 @@ from .config import IngestionConfig
 LOGGER = logging.getLogger(__name__)
 
 
-def _call_symbols_by_exchange(listing_obj: object, cfg: IngestionConfig) -> pd.DataFrame | None:
-    """Gọi Listing.symbols_by_exchange với tham số phù hợp KBS/VCI."""
+def _call_symbols_by_exchange(
+    listing_obj: object, cfg: IngestionConfig
+) -> pd.DataFrame | None:
+    """Call Listing.symbols_by_exchange with version-compatible kwargs."""
     if not hasattr(listing_obj, "symbols_by_exchange"):
         return None
     try:
@@ -31,30 +32,11 @@ def _call_symbols_by_exchange(listing_obj: object, cfg: IngestionConfig) -> pd.D
             kwargs["show_log"] = False
         raw = listing_obj.symbols_by_exchange(**kwargs)
     except Exception as ex:
-        LOGGER.warning("symbols_by_exchange: %s", ex)
+        LOGGER.warning("symbols_by_exchange failed: %s", ex)
         return None
-    if raw is None:
-        return None
-    if hasattr(raw, "empty") and raw.empty:
-        return None
-    if not isinstance(raw, pd.DataFrame):
+    if raw is None or not isinstance(raw, pd.DataFrame) or raw.empty:
         return None
     return raw
-
-
-def _clean_text_columns(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    text_cols = out.select_dtypes(include="object").columns
-    for col in text_cols:
-        out[col] = (
-            out[col]
-            .astype(str)
-            .str.replace("\n", " ", regex=False)
-            .str.replace("\r", " ", regex=False)
-            .str.strip()
-        )
-        out.loc[out[col].str.lower().isin(["nan", "none", "null"]), col] = pd.NA
-    return out
 
 
 def _extract_company_row(raw: object) -> dict:
@@ -65,8 +47,7 @@ def _extract_company_row(raw: object) -> dict:
     return {}
 
 
-def _company_source_order(cfg: IngestionConfig) -> list[str]:
-    """Ưu tiên KBS cho company overview vì VCI có thể lỗi response theo version."""
+def _source_order_kbs_first(cfg: IngestionConfig) -> list[str]:
     sources = cfg.resolved_data_sources()
 
     def _priority(src: str) -> int:
@@ -78,6 +59,14 @@ def _company_source_order(cfg: IngestionConfig) -> list[str]:
         return 1
 
     return sorted(sources, key=_priority)
+
+
+def _company_source_order(cfg: IngestionConfig) -> list[str]:
+    return _source_order_kbs_first(cfg)
+
+
+def _finance_source_order(cfg: IngestionConfig) -> list[str]:
+    return _source_order_kbs_first(cfg)
 
 
 def _is_incompatible_company_source_error(ex: Exception) -> bool:
@@ -85,61 +74,6 @@ def _is_incompatible_company_source_error(ex: Exception) -> bool:
         return False
     msg = str(ex).strip().lower()
     return msg in {"'data'", '"data"', "data"}
-
-
-def _fetch_company_from_source(
-    symbol: str,
-    src: str,
-    cfg: IngestionConfig,
-) -> tuple[dict, str]:
-    last_error: Exception | None = None
-    for method_name in ("overview", "profile"):
-
-        def _fetch() -> object:
-            wait_for_rate_limit(cfg.rate_limit_rpm)
-            company = Company(source=src, symbol=symbol)
-            if not hasattr(company, method_name):
-                raise AttributeError(f"Company[{src}] has no method `{method_name}`")
-            return getattr(company, method_name)()
-
-        try:
-            raw = call_with_retry(
-                _fetch,
-                max_attempts=cfg.api_retry_max_attempts,
-                base_delay_sec=cfg.api_retry_base_delay_sec,
-                label=f"company {symbol}@{src}/{method_name}",
-            )
-        except AttributeError:
-            continue
-        except Exception as ex:
-            last_error = ex
-            # Lỗi incompatibility kiểu KeyError('data'): không cần thử method tiếp theo.
-            if _is_incompatible_company_source_error(ex):
-                break
-            continue
-
-        row = _extract_company_row(raw)
-        if row:
-            return row, method_name
-
-    if last_error is not None:
-        raise last_error
-    return {}, ""
-
-
-def _finance_source_order(cfg: IngestionConfig) -> list[str]:
-    """Ưu tiên KBS cho financial ratio; VCI có thể lỗi response theo version."""
-    sources = cfg.resolved_data_sources()
-
-    def _priority(src: str) -> int:
-        key = (src or "").strip().lower()
-        if key == "kbs":
-            return 0
-        if key == "vci":
-            return 2
-        return 1
-
-    return sorted(sources, key=_priority)
 
 
 def _is_incompatible_finance_source_error(ex: Exception) -> bool:
@@ -169,7 +103,22 @@ def _is_transient_finance_source_error(ex: Exception) -> bool:
     return any(tok in msg for tok in transient_tokens)
 
 
+def _flatten_multiindex_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if isinstance(out.columns, pd.MultiIndex):
+        out.columns = [
+            "_".join([str(x) for x in c if str(x) != ""]).strip("_")
+            for c in out.columns
+        ]
+    return out
+
+
 def ingest_listing(cfg: IngestionConfig | None = None) -> str:
+    """Write a raw-ish listing snapshot plus ingest metadata.
+
+    Silver is responsible for stock filtering, symbol normalization, exchange
+    cleanup, duplicate handling and the analytics-ready column order.
+    """
     cfg = cfg or IngestionConfig()
     df = pd.DataFrame()
     src_used = ""
@@ -187,17 +136,10 @@ def ingest_listing(cfg: IngestionConfig | None = None) -> str:
                 label=f"symbols_by_exchange@{src}",
             )
             if ex_fetched is not None and not ex_fetched.empty:
-                ex_fetched = ex_fetched.copy()
-                ex_fetched.columns = [str(c).strip().lower() for c in ex_fetched.columns]
-                if "symbol" in ex_fetched.columns and "exchange" in ex_fetched.columns:
-                    df = ex_fetched
-                    src_used = src
-                    LOGGER.info(
-                        "symbols_by_exchange: %s mã (có sàn) từ %s",
-                        len(df),
-                        src.upper(),
-                    )
-                    break
+                df = ex_fetched.copy()
+                src_used = src
+                LOGGER.info("symbols_by_exchange: %s rows from %s", len(df), src.upper())
+                break
 
             def _symbols() -> pd.DataFrame:
                 wait_for_rate_limit(cfg.rate_limit_rpm)
@@ -212,127 +154,84 @@ def ingest_listing(cfg: IngestionConfig | None = None) -> str:
             if fetched is not None and not fetched.empty:
                 df = fetched.copy()
                 src_used = src
-                LOGGER.info("all_symbols: %s mã từ %s", len(df), src.upper())
+                LOGGER.info("all_symbols: %s rows from %s", len(df), src.upper())
                 break
         except Exception as ex:
-            LOGGER.warning("listing(%s) lỗi: %s", src, ex)
+            LOGGER.warning("listing(%s) failed: %s", src, ex)
     if df.empty:
-        LOGGER.warning("Không lấy được listing")
+        LOGGER.warning("listing response is empty")
         return ""
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    if "symbol" in df.columns:
-        df["symbol"] = df["symbol"].astype(str).str.strip().str.upper()
-    if "exchange" in df.columns:
-        ex = df["exchange"].astype(str).str.strip().str.upper()
-        df["exchange"] = ex.mask(ex.isin(["", "NAN", "NONE", "<NA>"]))
-    exchange_rows: list[dict] = []
-    # Theo vnstock KBS: VNMidCap, VNSmallCap — map cả alias cũ để tương thích
-    index_exchange_map = {
-        "VN30": "HOSE",
-        "VNMIDCAP": "HOSE",
-        "VNMidCap": "HOSE",
-        "VNSML": "HOSE",
-        "VNSmallCap": "HOSE",
-        "VN100": "HOSE",
-        "VNALL": "HOSE",
-        "HNX30": "HNX",
-        "HNXINDEX": "HNX",
-    }
-    need_fallback = "exchange" not in df.columns or df["exchange"].isna().all()
-    if need_fallback or df["exchange"].isna().any():
-        try:
-            listing_obj = Listing(source=src_used or cfg.resolved_data_sources()[0])
-            for idx_code, exchange in index_exchange_map.items():
-                try:
-                    if not hasattr(listing_obj, "symbols_by_group"):
-                        continue
-                    idx_raw = listing_obj.symbols_by_group(group=idx_code)
-                    if idx_raw is None:
-                        continue
-                    if isinstance(idx_raw, pd.Series):
-                        if idx_raw.empty:
-                            continue
-                        syms = idx_raw.dropna().astype(str).str.strip().str.upper()
-                    else:
-                        idx_df = idx_raw
-                        if idx_df.empty:
-                            continue
-                        idx_df.columns = [str(c).strip().lower() for c in idx_df.columns]
-                        sym_col = next(
-                            (c for c in ["symbol", "ticker", "code"] if c in idx_df.columns),
-                            None,
-                        )
-                        if not sym_col:
-                            continue
-                        syms = idx_df[sym_col].dropna().astype(str).str.strip().str.upper()
-                    for sym in syms.unique():
-                        exchange_rows.append({"symbol": sym, "exchange": exchange})
-                except Exception as ex:
-                    LOGGER.debug("symbols_by_group(%s) lỗi: %s", idx_code, ex)
-        except Exception as ex:
-            LOGGER.warning("build exchange map lỗi: %s", ex)
-        if exchange_rows:
-            emap = pd.DataFrame(exchange_rows)
-            prio = {"HOSE": 0, "HNX": 1, "UPCOM": 2}
-            emap["_p"] = emap["exchange"].map(prio).fillna(9)
-            emap = emap.sort_values("_p").drop_duplicates("symbol", keep="first").drop(
-                columns=["_p"]
-            )
-            df = df.drop(columns=["exchange"], errors="ignore").merge(
-                emap, on="symbol", how="left"
-            )
-        elif "exchange" not in df.columns:
-            df["exchange"] = pd.NA
-    if "exchange" not in df.columns:
-        df["exchange"] = pd.NA
-    df["exchange"] = df["exchange"].fillna("UNKNOWN")
-    before = len(df)
-    if "type" in df.columns:
-        tnorm = df["type"].astype(str).str.lower().str.strip()
-        df = df[tnorm == "stock"].copy()
-    elif "id" in df.columns:
-        df = df[df["id"] == 1].copy()
-    LOGGER.info("Lọc stock: %s -> %s dòng", before, len(df))
-    if "organ_name_x" in df.columns:
-        df = df.rename(columns={"organ_name_x": "organ_name"})
-    if "organ_name_y" in df.columns:
-        df = df.drop(columns=["organ_name_y"])
-    if "id" in df.columns:
-        df = df.drop(columns=["id"])
+
+    df = _flatten_multiindex_columns(df)
     df["crawled_at"] = cfg.run_date
-    priority = ["symbol", "organ_name", "en_organ_name", "exchange", "type", "crawled_at"]
-    existing = [c for c in priority if c in df.columns]
-    other = [c for c in df.columns if c not in existing]
-    df = df[existing + other]
+    df["source"] = src_used
     out_file = cfg.data_lake_root / "listing" / "master" / "listing.parquet"
     out_file.parent.mkdir(parents=True, exist_ok=True)
     try:
         df.to_parquet(out_file, engine="pyarrow", index=False)
     except ImportError:
         df.to_parquet(out_file, engine="fastparquet", index=False)
-    LOGGER.info("✓ Đã ghi %s dòng -> %s", len(df), out_file)
+    LOGGER.info("Saved raw-ish listing snapshot: %s rows -> %s", len(df), out_file)
     return str(out_file)
 
 
-def ingest_company_overview(cfg: IngestionConfig | None = None) -> str:
-    cfg = cfg or IngestionConfig()
-    out_file = cfg.data_lake_root / "company" / "master" / "company_overview.parquet"
-    df_old = pd.DataFrame()
-    if out_file.exists():
-        try:
-            df_old = pd.read_parquet(out_file)
-        except Exception:
-            LOGGER.exception("Không đọc được file master %s, coi như chưa có mã cũ.", out_file)
-            df_old = pd.DataFrame()
+def _fetch_company_from_source(
+    symbol: str,
+    src: str,
+    cfg: IngestionConfig,
+) -> tuple[dict, str]:
+    last_error: Exception | None = None
+    for method_name in ("overview", "profile"):
 
-    tickers_batch = cfg.tickers[: cfg.max_tickers_per_run]
-    symbols_to_fetch = [
-        str(t).strip().upper()
-        for t in tickers_batch
-        if str(t).strip()
-    ]
+        def _fetch() -> object:
+            wait_for_rate_limit(cfg.rate_limit_rpm)
+            company = Company(source=src, symbol=symbol)
+            if not hasattr(company, method_name):
+                raise AttributeError(f"Company[{src}] has no method `{method_name}`")
+            return getattr(company, method_name)()
+
+        try:
+            raw = call_with_retry(
+                _fetch,
+                max_attempts=cfg.api_retry_max_attempts,
+                base_delay_sec=cfg.api_retry_base_delay_sec,
+                label=f"company {symbol}@{src}/{method_name}",
+            )
+        except AttributeError:
+            continue
+        except Exception as ex:
+            last_error = ex
+            if _is_incompatible_company_source_error(ex):
+                break
+            continue
+
+        row = _extract_company_row(raw)
+        if row:
+            return row, method_name
+
+    if last_error is not None:
+        raise last_error
+    return {}, ""
+
+
+def ingest_company_overview(cfg: IngestionConfig | None = None) -> str:
+    """Write a raw-ish company snapshot plus ingest metadata.
+
+    Silver is responsible for text cleanup, date/numeric coercion, ticker
+    normalization and current-record dedupe.
+    """
+    cfg = cfg or IngestionConfig()
+    out_file = (
+        cfg.data_lake_root
+        / "company"
+        / "snapshots"
+        / f"snapshot_date={cfg.run_date}"
+        / "company_overview.parquet"
+    )
+
+    symbols_to_fetch = [str(t).strip() for t in cfg.tickers[: cfg.max_tickers_per_run] if str(t).strip()]
     if not symbols_to_fetch:
-        LOGGER.info("Company master: không có ticker hợp lệ trong batch.")
+        LOGGER.info("Company snapshot: no valid symbols in batch.")
         return str(out_file) if out_file.exists() else ""
 
     rows: list[dict] = []
@@ -343,7 +242,7 @@ def ingest_company_overview(cfg: IngestionConfig | None = None) -> str:
         LOGGER.info("Company source order: %s", " -> ".join(company_sources))
 
     for idx, symbol in enumerate(symbols_to_fetch):
-        LOGGER.info("[%s/%s] Đang tải company %s...", idx + 1, n_run, symbol)
+        LOGGER.info("[%s/%s] Fetching company %s...", idx + 1, n_run, symbol)
         row: dict = {}
         src_used = ""
         method_used = ""
@@ -359,12 +258,9 @@ def ingest_company_overview(cfg: IngestionConfig | None = None) -> str:
                 LOGGER.warning("Company %s (%s): %s", symbol, src, ex)
                 if _is_incompatible_company_source_error(ex):
                     disabled_sources.add(src)
-                    LOGGER.warning(
-                        "Company source %s tạm disable cho phần còn lại của run (lỗi không tương thích response).",
-                        src,
-                    )
+                    LOGGER.warning("Company source %s disabled for this run.", src)
         if not src_used:
-            LOGGER.warning("Company %s: không lấy được từ nguồn nào", symbol)
+            LOGGER.warning("Company %s: no usable source", symbol)
             if idx < n_run - 1:
                 time.sleep(cfg.inter_request_delay_sec)
             continue
@@ -375,46 +271,22 @@ def ingest_company_overview(cfg: IngestionConfig | None = None) -> str:
         rows.append(row)
         if idx < n_run - 1:
             time.sleep(cfg.inter_request_delay_sec)
+
     df_new = pd.DataFrame(rows)
     if df_new.empty:
-        LOGGER.warning("company_df rỗng — bỏ qua lưu.")
+        LOGGER.warning("company_df is empty; skip save.")
         return str(out_file) if out_file.exists() else ""
-    df_new = _clean_text_columns(df_new)
-    df_new["ticker"] = df_new["ticker"].astype(str).str.strip().str.upper()
-    if "source" not in df_new.columns:
-        df_new["source"] = cfg.primary_source
-    df_new = df_new.drop_duplicates(subset=["ticker", "source"], keep="last")
     df_new["snapshot_date"] = cfg.run_date
     df_new["fetched_at"] = datetime.now(timezone.utc).isoformat()
-    df_new["ingest_run_id"] = str(uuid.uuid4())
+
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    if df_old.empty:
-        combined = df_new
-    else:
-        cols = list(dict.fromkeys(list(df_old.columns) + list(df_new.columns)))
-        combined = pd.concat(
-            [df_old.reindex(columns=cols), df_new.reindex(columns=cols)],
-            ignore_index=True,
-            sort=False,
-        )
-
-    dedupe_keys = [
-        c for c in ["ticker", "snapshot_date", "source"] if c in combined.columns
-    ]
-    if dedupe_keys:
-        sort_cols = [c for c in ["fetched_at", "ingest_run_id"] if c in combined.columns]
-        if sort_cols:
-            combined = combined.sort_values(sort_cols, kind="stable")
-        combined = combined.drop_duplicates(subset=dedupe_keys, keep="last")
-
     try:
-        combined.to_parquet(out_file, engine="pyarrow", index=False)
+        df_new.to_parquet(out_file, engine="pyarrow", index=False)
     except ImportError:
-        combined.to_parquet(out_file, engine="fastparquet", index=False)
+        df_new.to_parquet(out_file, engine="fastparquet", index=False)
     LOGGER.info(
-        "✓ company master: thêm %s snapshot, tổng %s dòng lịch sử -> %s",
+        "Saved raw-ish company snapshot: rows=%s -> %s",
         len(df_new),
-        len(combined),
         out_file,
     )
     return str(out_file)
@@ -494,20 +366,14 @@ def _fetch_finance_ratio_one(
 
         if source_incompatible:
             newly_disabled.add(src)
-            LOGGER.warning(
-                "Finance source %s tạm disable cho phần còn lại của run (lỗi không tương thích response).",
-                src,
-            )
+            LOGGER.warning("Finance source %s disabled for this run.", src)
         elif (
             disable_on_transient_error
             and source_had_transient_error
             and not source_had_non_transient_error
         ):
             newly_disabled.add(src)
-            LOGGER.warning(
-                "Finance source %s tạm disable cho phần còn lại của run (lỗi kết nối/retry lặp lại).",
-                src,
-            )
+            LOGGER.warning("Finance source %s disabled after transient errors.", src)
 
     all_sources_errored = attempted_sources > 0 and sources_with_exception == attempted_sources
     return pd.DataFrame(), "", "", newly_disabled, all_sources_errored
@@ -530,18 +396,17 @@ def ingest_financial_ratio(cfg: IngestionConfig | None = None) -> dict[str, str]
     for idx, symbol in enumerate(cfg.tickers[: cfg.max_tickers_per_run]):
         active_sources = [src for src in source_order if src not in disabled_sources]
         if not active_sources:
-            LOGGER.warning(
-                "Dừng financial_ratio sớm: không còn nguồn khả dụng sau khi disable (%s)",
-                ", ".join(sorted(disabled_sources)) if disabled_sources else "none",
-            )
+            LOGGER.warning("Stop financial_ratio early: no active sources remain.")
             break
 
-        LOGGER.info("[%s/%s] Đang tải financial ratio %s...", idx + 1, n_run, symbol)
-        ratio_df, src_used, period_used, newly_disabled, all_sources_errored = _fetch_finance_ratio_one(
-            symbol,
-            cfg,
-            sources=active_sources,
-            disabled_sources=disabled_sources,
+        LOGGER.info("[%s/%s] Fetching financial ratio %s...", idx + 1, n_run, symbol)
+        ratio_df, src_used, period_used, newly_disabled, all_sources_errored = (
+            _fetch_finance_ratio_one(
+                symbol,
+                cfg,
+                sources=active_sources,
+                disabled_sources=disabled_sources,
+            )
         )
         if newly_disabled:
             disabled_sources.update(newly_disabled)
@@ -550,13 +415,13 @@ def ingest_financial_ratio(cfg: IngestionConfig | None = None) -> dict[str, str]
                 consecutive_source_error_tickers += 1
             else:
                 consecutive_source_error_tickers = 0
-            LOGGER.warning("Bỏ qua %s — financial_ratio rỗng mọi nguồn/kỳ", symbol)
+            LOGGER.warning("Skip %s: empty financial_ratio from all sources/periods", symbol)
             if (
                 abort_after_source_errors > 0
                 and consecutive_source_error_tickers >= abort_after_source_errors
             ):
                 LOGGER.error(
-                    "Dừng financial_ratio sớm sau %s ticker liên tiếp lỗi nguồn (upstream có thể đang outage).",
+                    "Stop financial_ratio after %s consecutive source-error tickers.",
                     consecutive_source_error_tickers,
                 )
                 break
@@ -569,11 +434,16 @@ def ingest_financial_ratio(cfg: IngestionConfig | None = None) -> dict[str, str]
         ratio_df["data_source"] = src_used
         ratio_df["ratio_period"] = period_used
         out_file = save_partition_parquet(
-            ratio_df, cfg.data_lake_root, "financial_ratio", cfg.run_date, symbol
+            ratio_df,
+            cfg.data_lake_root,
+            "financial_ratio",
+            cfg.run_date,
+            symbol,
+            partition_key="snapshot_date",
         )
         outputs[symbol] = str(out_file)
         LOGGER.info(
-            "✓ ratio %s: %s dòng (src=%s, period=%s)",
+            "Saved ratio %s: %s rows (src=%s, period=%s)",
             symbol,
             len(ratio_df),
             src_used,
@@ -611,18 +481,22 @@ def ingest_price_board(cfg: IngestionConfig | None = None) -> str:
         except Exception as ex:
             LOGGER.warning("price_board (%s): %s", src, ex)
     if raw is None or (hasattr(raw, "empty") and raw.empty):
-        LOGGER.warning("price_board_snapshot rỗng mọi nguồn — bỏ qua lưu.")
+        LOGGER.warning("price_board_snapshot is empty from all sources; skip save.")
         return ""
     if not isinstance(raw, pd.DataFrame):
         raw = pd.DataFrame(raw)
-    df = raw.copy()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = ["_".join([str(x) for x in c if str(x) != ""]).strip("_") for c in df.columns]
-    df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
-    df["snapshot_date"] = cfg.run_date
+    df = _flatten_multiindex_columns(raw)
+    snapshot_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
+    df["snapshot_at"] = snapshot_at
     df["data_source"] = src_used
     out_file = save_partition_parquet(
-        df, cfg.data_lake_root, "price_board", cfg.run_date, "price_board_snapshot"
+        df,
+        cfg.data_lake_root,
+        "price_board",
+        cfg.run_date,
+        "price_board_snapshot",
+        partition_key="snapshot_at",
+        partition_value=snapshot_at,
     )
     return str(out_file)
 

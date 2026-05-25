@@ -1,0 +1,74 @@
+version: 2
+
+models:
+  - name: stg_price
+    columns:
+      - name: ticker
+        tests: [not_null]
+      - name: trading_date
+        tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [ticker, trading_date]
+
+  - name: stg_index_price
+    columns:
+      - name: index_code
+        tests: [not_null]
+      - name: trading_date
+        tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [index_code, trading_date]
+
+  - name: stg_listing
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+
+  - name: stg_company
+    columns:
+      - name: ticker
+        tests: [not_null, unique]
+
+  - name: stg_financial_ratio
+    columns:
+      - name: ticker
+        tests: [not_null]
+      - name: item_code
+        tests: [not_null]
+      - name: period
+        tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [ticker, item_code, period]
+
+  - name: stg_price_board
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: trading_date
+        tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [symbol, trading_date]
+
+  - name: stg_news
+    columns:
+      - name: article_id
+        tests: [not_null, unique]
+      - name: published_date
+        tests: [not_null]
+      - name: ticker
+        tests: [not_null]
+
+  - name: stg_bctc_pdf_meta
+    columns:
+      - name: doc_id
+        tests: [not_null, unique]
+      - name: ticker
+        tests: [not_null]

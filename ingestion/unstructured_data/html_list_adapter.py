@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -16,19 +18,48 @@ from ingestion.common import call_with_retry, wait_for_rate_limit
 from .config import NewsIngestionConfig
 from .schema import (
     NEWS_COLUMNS,
-    build_ticker_regex,
     compact_text,
     compute_article_id,
     dedupe_news,
     empty_news_frame,
-    infer_ticker,
+    infer_ticker_with_universe,
     normalize_url,
-    parse_datetime_to_iso_utc,
     safe_json_dumps,
     strip_html,
 )
 
 LOGGER = logging.getLogger(__name__)
+
+SOURCE_DATE_CONFIG = {
+    "cafef_html": {
+        "selector": "span.pdate",
+        "format": "%d-%m-%Y - %I:%M %p",
+    },
+    "vnexpress_html": {
+        "selector": "span.date",
+        "format": "%A, %d/%m/%Y, %H:%M (GMT+7)",
+        "locale": "vi_VN",
+    },
+}
+
+SOURCE_DATE_SCOPES = {
+    "cafef_html": (
+        "article",
+        "div.detail-section",
+        "div.main",
+        "div.left_cate.totalcontentdetail",
+        "div.totalcontentdetail",
+    ),
+    "vnexpress_html": (
+        "header",
+        "article",
+        "div.header-content",
+        "section.page-detail",
+        "div.sidebar-1",
+    ),
+}
+
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 def _select_one_text(soup: BeautifulSoup, css: str | None) -> str:
@@ -49,6 +80,68 @@ def _select_many_text(soup: BeautifulSoup, css: str | None) -> str:
     return compact_text(" ".join(n.get_text(" ") for n in nodes))
 
 
+def _select_published_at_raw(soup: BeautifulSoup, source: str) -> str:
+    cfg = SOURCE_DATE_CONFIG.get(source)
+    if not cfg:
+        return ""
+    selector = str(cfg["selector"])
+    for scope_selector in SOURCE_DATE_SCOPES.get(source, ()):
+        scope = soup.select_one(scope_selector)
+        if not scope:
+            continue
+        tag = scope.select_one(selector)
+        if tag:
+            raw = compact_text(tag.get_text(" ", strip=True))
+            if raw:
+                return raw
+    tag = soup.select_one(selector)
+    if not tag:
+        return ""
+    return compact_text(tag.get_text(" ", strip=True))
+
+
+def _parse_vnexpress_date(raw: str) -> datetime | None:
+    cleaned = re.sub(r"^[^,]+,\s*", "", raw.strip())
+    cleaned = re.sub(r"\s*\(GMT\+7\)$", "", cleaned)
+    return datetime.strptime(cleaned, "%d/%m/%Y, %H:%M")
+
+
+def _parse_cafef_date(raw: str, fmt: str) -> datetime:
+    try:
+        return datetime.strptime(raw, fmt)
+    except ValueError:
+        cleaned = re.sub(r"\s+(?:AM|PM)$", "", raw.strip(), flags=re.IGNORECASE)
+        return datetime.strptime(cleaned, "%d-%m-%Y - %H:%M")
+
+
+def parse_published_at(soup: BeautifulSoup, source: str) -> datetime | None:
+    raw = ""
+    try:
+        cfg = SOURCE_DATE_CONFIG.get(source)
+        if not cfg:
+            return None
+        raw = _select_published_at_raw(soup, source)
+        if not raw:
+            return None
+        if source == "vnexpress_html":
+            local_naive = _parse_vnexpress_date(raw)
+        elif source == "cafef_html":
+            local_naive = _parse_cafef_date(raw, str(cfg["format"]))
+        else:
+            local_naive = datetime.strptime(raw, str(cfg["format"]))
+        if local_naive is None:
+            return None
+        return local_naive.replace(tzinfo=VN_TZ).astimezone(timezone.utc)
+    except Exception as ex:
+        LOGGER.warning(
+            "parse_published_at failed | source=%s | raw=%r | %s",
+            source,
+            raw,
+            ex,
+        )
+        return None
+
+
 def fetch_html_list_news(
     cfg: NewsIngestionConfig, html_specs: list[dict[str, Any]]
 ) -> pd.DataFrame:
@@ -59,9 +152,7 @@ def fetch_html_list_news(
     max_per = int(getattr(cfg, "html_max_per_source", 0) or cfg.max_articles_per_source)
     max_per = max(1, max_per)
 
-    ticker_re = (
-        build_ticker_regex(cfg.resolved_tickers()) if cfg.enable_ticker_match else None
-    )
+    ticker_universe = cfg.resolved_ticker_universe() if cfg.enable_ticker_match else frozenset()
     session = requests.Session()
     session.headers.update(cfg.http_headers)
 
@@ -141,17 +232,19 @@ def fetch_html_list_news(
                     detail_title = _select_one_text(detail_soup, detail_cfg.get("title_css"))
                     detail_summary = _select_one_text(detail_soup, detail_cfg.get("summary_css"))
                     detail_body = _select_many_text(detail_soup, detail_cfg.get("body_css"))
-                    detail_published = _select_one_text(
-                        detail_soup, detail_cfg.get("published_at_css")
-                    )
                     title = detail_title or title
                     summary = strip_html(detail_summary)
                     body_text = strip_html(detail_body)
-                    published_at = parse_datetime_to_iso_utc(detail_published)
+                    published_at = parse_published_at(detail_soup, source)
                     detail_success += 1
                 except Exception as ex:
                     LOGGER.debug("Failed HTML detail %s: %s", url, ex)
-            ticker = infer_ticker([title, summary, body_text], ticker_re)
+            if detail_cfg and not published_at and not body_text:
+                continue
+            ticker = infer_ticker_with_universe(
+                [title, summary, body_text],
+                ticker_universe,
+            )
             article_id = compute_article_id(
                 url=url,
                 source=source,
