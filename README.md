@@ -81,7 +81,10 @@ Snapshot Warehouse/Gold đã được tài liệu hóa theo cùng dữ liệu de
 - `gold.mart_company_profile`: 50 rows
 - `gold.mart_market_overview`: 1,247 rows
 - `gold.mart_stock_news_daily`: 154 rows
-- `gold.fact_news_article`: ~subset của `silver.news` (bài có title + ngày đăng; xem `stg_news`)
+- `gold.fact_news_article`: explode theo `(article_id, ticker)` từ `silver.news` (bài có title + ngày đăng; xem `stg_news`)
+- `gold.mart_stock_news_signal`: mới 2026-06, tin theo phiên giao dịch + weighted sentiment
+- `gold.mart_price_board`: mới 2026-06, bid/ask + foreign flow
+- `gold.mart_financial_summary`: mới 2026-06, financial ratio pivot wide
 - `gold.mart_bctc_documents`: 952 rows
 - `gold.mart_ticker_directory`: union ticker từ price, news, BCTC, company
 
@@ -352,16 +355,22 @@ Các model Gold chính:
 | Staging          | `stg_price`, `stg_index_price`, `stg_listing`, `stg_company`, `stg_financial_ratio`, `stg_price_board`, `stg_news` (ephemeral), `stg_bctc_pdf_meta` (ephemeral) |
 | Intermediate     | `int_price_indicator`, `int_news_sentiment_daily`                                                                                       |
 | Facts/dimensions | `fact_price_daily`, `fact_index_daily`, `fact_news_article`, `dim_security`, `dim_company`                                                |
-| Marts            | `mart_stock_daily`, `mart_company_profile`, `mart_market_overview`, `mart_stock_news_daily`, `mart_bctc_documents`, `mart_ticker_directory` |
+| Marts            | `mart_stock_daily`, `mart_company_profile`, `mart_market_overview`, `mart_stock_news_daily`, `mart_stock_news_signal`, `mart_price_board`, `mart_financial_summary`, `mart_bctc_documents`, `mart_ticker_directory` |
 
 
 Ghi chú:
 
 - `stg_news` và `stg_bctc_pdf_meta` là `ephemeral`; không tạo quan hệ vật lý.
-- `int_price_indicator` tính daily return, MA7/20/50, RSI14, xấp xỉ MACD SMA
-và Bollinger Bands từ `stg_price`.
+- `int_price_indicator` tính daily return, MA7/20/50, RSI14, xấp xỉ MACD SMA,
+Bollinger Bands, `volume_ma20` và `obv` từ `stg_price`.
 - `int_news_sentiment_daily` tổng hợp sentiment keyword-v1 theo
 `ticker + published_date`.
+
+Gold models mới (2026-06):
+
+- `mart_price_board` — bảng giá bid/ask, foreign flow
+- `mart_financial_summary` — financial ratio đã pivot wide
+- `mart_stock_news_signal` — tin tức theo phiên GD, weighted sentiment, `news_signal`
 
 ### 6. Backend FastAPI
 
@@ -391,18 +400,33 @@ GET /prices/{symbol}?from=2026-01-01&to=2026-05-18&page=1&page_size=100
 GET /indicators/{symbol}
 GET /financials/{symbol}
 GET /financials/{symbol}?period_type=quarter
+GET /financials/{symbol}?period_type=annual
+GET /board/{symbol}
+GET /board/{symbol}/foreign-flow?from=2026-05-01&to=2026-05-31
 GET /news/articles?ticker=&q=&sentiment=&from=&to=&page=
 GET /news/market?page_size=15
 GET /news/{symbol}
+GET /news/{symbol}/signal
 GET /news/{symbol}/articles
+GET /news/{symbol}/articles?relevance=title
 GET /news/{symbol}?from=2026-05-01&to=2026-05-19
-GET /bctc/documents?ticker=&year=&q=&page=
+GET /bctc/documents?ticker=&year=&q=&from=&to=&page=
 GET /bctc/recent?page_size=10
 GET /bctc/{symbol}
-GET /bctc/{symbol}?year=2025
+GET /bctc/{symbol}?year=2025&from=2026-01-01&to=2026-05-31
 GET /bctc/{symbol}/file/{doc_id}
 GET /docs
 ```
+
+Lineage endpoint chính (2026-06):
+
+| Endpoint | Gold source |
+|---|---|
+| `GET /financials/{symbol}` | `gold.mart_financial_summary` |
+| `GET /news/{symbol}` | `gold.mart_stock_news_signal` |
+| `GET /news/{symbol}/signal` | `gold.mart_stock_news_signal` |
+| `GET /board/{symbol}` | `gold.mart_price_board` |
+| `GET /board/{symbol}/foreign-flow` | `gold.mart_price_board` |
 
 Smoke check:
 
@@ -414,14 +438,27 @@ curl http://localhost:8000/companies/VCB
 curl "http://localhost:8000/prices/VCB?page_size=10"
 curl http://localhost:8000/indicators/VCB
 curl http://localhost:8000/financials/VCB
+curl http://localhost:8000/board/VCB
+curl "http://localhost:8000/board/VCB/foreign-flow?from=2026-05-01&to=2026-05-31"
 curl "http://localhost:8000/news/articles?page_size=20"
 curl http://localhost:8000/news/FPT
+curl http://localhost:8000/news/FPT/signal
 curl "http://localhost:8000/news/FPT/articles?page_size=20"
 curl "http://localhost:8000/news/market?page_size=10"
 curl "http://localhost:8000/bctc/documents?page_size=20"
 curl "http://localhost:8000/bctc/recent?page_size=10"
 curl http://localhost:8000/bctc/AAV
 ```
+
+### 6.1. Current API/UI data behavior (2026-06-02)
+
+- Dashboard index cards call `GET /market/overview?date=...` when a date is selected. If no date is selected, API returns the latest `gold.mart_market_overview.trading_date`.
+- Stock detail has a shared date range filter. The range is passed to prices, indicators, board, foreign flow, stock news signal, and BCTC documents through the DB date fields (`trading_date`, mapped news `trading_date`, or BCTC `published_at::date`).
+- Stock price chart renders `open`, `high`, `low`, and `close`; hover tooltip also shows `volume`.
+- Company profile no longer renders `charter_capital` in the stock UI because the current dataset does not provide reliable charter capital for display.
+- Financial tab reads `gold.mart_financial_summary`. `period_type=quarter` returns real quarterly rows; `period_type=annual` returns annual rows derived from the latest quarter available in each year when raw annual rows are absent.
+- Stock-detail news summary reads `gold.mart_stock_news_signal`. `avg_sentiment_score` is the simple average article sentiment in the mapped trading session; `weighted_sentiment` gives larger weight to title/summary/source-tier matches; `news_signal` is positive/negative/neutral from weighted thresholds.
+- Main news archive reads `gold.fact_news_article` and can preview full `body_text` only for articles where `body_text` exists.
 
 ### 7. Frontend React
 
@@ -456,7 +493,7 @@ Các route:
 | Route            | Mục đích                                                                                       |
 | ---------------- | ---------------------------------------------------------------------------------------------- |
 | `/`              | Market dashboard, index cards, search (`mart_ticker_directory`), top movers, tin thị trường, BCTC gần đây |
-| `/stock/:symbol` | Profile, chart, indicators, financials, **tin từng bài** + sentiment ngày, BCTC PDF          |
+| `/stock/:symbol` | Profile, chart, board/foreign flow, indicators, financials wide format, tin theo phiên + top articles, BCTC PDF |
 
 
 Base URL API mặc định là `VITE_API_URL` nếu có, nếu không thì `/api`.

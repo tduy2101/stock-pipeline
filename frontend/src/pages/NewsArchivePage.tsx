@@ -1,4 +1,4 @@
-import { ExternalLink, Newspaper, Search } from 'lucide-react'
+import { ExternalLink, Newspaper, Search, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PageWrapper } from '@/components/layout/PageWrapper'
@@ -21,6 +21,9 @@ export default function NewsArchivePage() {
   const [query, setQuery] = useState('')
   const [ticker, setTicker] = useState('')
   const [sentiment, setSentiment] = useState('')
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
+  const [previewArticle, setPreviewArticle] = useState<NewsArticleRow | null>(null)
 
   const params = useMemo(
     () => ({
@@ -29,8 +32,10 @@ export default function NewsArchivePage() {
       q: query.trim() || undefined,
       ticker: ticker.trim().toUpperCase() || undefined,
       sentiment: sentiment || undefined,
+      from: fromDate || undefined,
+      to: toDate || undefined,
     }),
-    [page, query, sentiment, ticker],
+    [fromDate, page, query, sentiment, ticker, toDate],
   )
 
   const { data, isLoading } = useAllNewsArticles(params)
@@ -73,7 +78,7 @@ export default function NewsArchivePage() {
       </section>
 
       <section className="rounded-lg border border-app-border bg-panel-dark p-4">
-        <div className="grid gap-3 lg:grid-cols-[1fr_10rem_11rem]">
+        <div className="grid gap-3 lg:grid-cols-[1fr_10rem_11rem_10rem_10rem]">
           <label className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-app-muted" size={16} />
             <input
@@ -99,6 +104,24 @@ export default function NewsArchivePage() {
             <option value="neutral">Trung lập</option>
             <option value="negative">Tiêu cực</option>
           </select>
+          <label className="grid gap-1">
+            <span className="text-[11px] text-app-muted">Từ ngày đăng</span>
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(event) => updateFilter(setFromDate, event.target.value)}
+              className="h-10 rounded-lg border border-app-border bg-app-input px-3 text-sm text-app-heading outline-none focus:border-accent"
+            />
+          </label>
+          <label className="grid gap-1">
+            <span className="text-[11px] text-app-muted">Đến ngày đăng</span>
+            <input
+              type="date"
+              value={toDate}
+              onChange={(event) => updateFilter(setToDate, event.target.value)}
+              className="h-10 rounded-lg border border-app-border bg-app-input px-3 text-sm text-app-heading outline-none focus:border-accent"
+            />
+          </label>
         </div>
       </section>
 
@@ -135,17 +158,28 @@ export default function NewsArchivePage() {
                     </p>
                   )}
                 </div>
-                {article.url && (
-                  <a
-                    href={article.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-accent/50 px-3 text-xs font-medium text-accent transition-colors hover:bg-accent hover:text-white"
-                  >
-                    <ExternalLink size={14} />
-                    Xem bài gốc
-                  </a>
-                )}
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  {article.body_text?.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => setPreviewArticle(article)}
+                      className="inline-flex h-9 items-center justify-center rounded-md border border-app-border px-3 text-xs font-medium text-app-heading transition-colors hover:border-accent/60 hover:bg-app-hover"
+                    >
+                      Preview
+                    </button>
+                  )}
+                  {article.url && (
+                    <a
+                      href={article.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent/50 px-3 text-xs font-medium text-accent transition-colors hover:bg-accent hover:text-white"
+                    >
+                      <ExternalLink size={14} />
+                      Xem bài gốc
+                    </a>
+                  )}
+                </div>
               </div>
             </article>
           ))}
@@ -173,6 +207,72 @@ export default function NewsArchivePage() {
           Trang sau
         </button>
       </div>
+
+      {previewArticle && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4">
+          <article className="max-h-[86vh] w-full max-w-3xl overflow-hidden rounded-lg border border-app-border bg-panel-dark shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-app-border p-4">
+              <div className="min-w-0">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs font-semibold text-accent">
+                    {previewArticle.ticker ?? 'THỊ TRƯỜNG'}
+                  </span>
+                  <span className="text-xs text-app-muted">
+                    {previewArticle.source ?? 'Không rõ nguồn'}
+                  </span>
+                  <span className="text-xs text-app-subtle">
+                    {formatDate(previewArticle.published_at ?? previewArticle.published_date)}
+                  </span>
+                  <SentimentBadge label={previewArticle.sentiment_label} />
+                </div>
+                <h2 className="text-base font-semibold leading-6 text-app-heading">
+                  {previewArticle.title}
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewArticle(null)}
+                aria-label="Đóng preview"
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-app-border text-app-muted transition-colors hover:bg-app-hover hover:text-app-heading"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="max-h-[58vh] overflow-auto p-4 scrollbar-thin">
+              {previewArticle.summary?.trim() && (
+                <p className="mb-4 rounded-lg border border-app-border bg-app-hover p-3 text-sm leading-6 text-app-text">
+                  {previewArticle.summary.trim()}
+                </p>
+              )}
+              <div className="whitespace-pre-wrap text-sm leading-7 text-app-text">
+                {previewArticle.body_text?.trim()}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-app-border p-4">
+              <button
+                type="button"
+                onClick={() => setPreviewArticle(null)}
+                className="h-9 rounded-md border border-app-border px-3 text-xs font-medium text-app-muted transition-colors hover:bg-app-hover hover:text-app-heading"
+              >
+                Đóng
+              </button>
+              {previewArticle.url && (
+                <a
+                  href={previewArticle.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent/50 px-3 text-xs font-medium text-accent transition-colors hover:bg-accent hover:text-white"
+                >
+                  <ExternalLink size={14} />
+                  Mở bài gốc
+                </a>
+              )}
+            </div>
+          </article>
+        </div>
+      )}
     </PageWrapper>
   )
 }

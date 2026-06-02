@@ -51,9 +51,27 @@ models:
   - name: fact_news_article
     columns:
       - name: article_id
-        tests: [not_null, unique]
+        tests: [not_null]
+      - name: ticker
+        tests: [not_null]
       - name: title
         tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [article_id, ticker]
+
+  - name: mart_stock_news_signal
+    description: "News mapped to trading sessions with weighted sentiment, signal, and top article JSON."
+    columns:
+      - name: ticker
+        tests: [not_null]
+      - name: trading_date
+        tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [ticker, trading_date]
 
   - name: mart_stock_news_daily
     columns:
@@ -72,6 +90,28 @@ models:
         tests: [not_null, unique]
       - name: ticker
         tests: [not_null]
+
+  - name: mart_price_board
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: trading_date
+        tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [symbol, trading_date]
+
+  - name: mart_financial_summary
+    columns:
+      - name: ticker
+        tests: [not_null]
+      - name: period
+        tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [ticker, period]
 
   - name: mart_ticker_directory
     columns:

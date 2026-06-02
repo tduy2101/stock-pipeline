@@ -31,4 +31,6 @@ class IndicatorRow(BaseModel):
     bb_upper: float | None
     bb_middle: float | None
     bb_lower: float | None
+    volume_ma20: float | None = None
+    obv: float | None = None
     volatility_20d: float | None

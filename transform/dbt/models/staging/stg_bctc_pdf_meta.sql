@@ -6,11 +6,13 @@ select
   year,
   period_key,
   title,
+  normalized_title,
   published_at,
   url_pdf,
   pdf_path,
   file_size,
   doc_class,
+  canonical_priority,
   is_consolidated,
   display_status,
   is_available_for_web

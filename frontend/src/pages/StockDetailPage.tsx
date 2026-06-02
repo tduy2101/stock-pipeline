@@ -1,8 +1,12 @@
 import { Link, useParams } from 'react-router-dom'
+import { useState } from 'react'
 import { BctcPanel } from '@/components/stock/BctcPanel'
 import { FinancialTable } from '@/components/stock/FinancialTable'
+import { ForeignFlowPanel } from '@/components/stock/ForeignFlowPanel'
 import { IndicatorChart } from '@/components/stock/IndicatorChart'
+import { NewsSignalBadge } from '@/components/stock/NewsSignalBadge'
 import { NewsPanel } from '@/components/stock/NewsPanel'
+import { PriceBoardTable } from '@/components/stock/PriceBoardTable'
 import { PriceChart } from '@/components/stock/PriceChart'
 import { PageWrapper } from '@/components/layout/PageWrapper'
 import { EmptyState } from '@/components/shared/EmptyState'
@@ -11,7 +15,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useCompany } from '@/hooks/useCompany'
 import {
   formatDate,
-  formatBillionVnd,
   formatPercentPoints,
   formatPrice,
   formatShares,
@@ -21,6 +24,8 @@ export default function StockDetailPage() {
   const { symbol } = useParams<{ symbol: string }>()
   const ticker = (symbol ?? '').toUpperCase()
   const { data: company, isLoading } = useCompany(ticker)
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
 
   if (isLoading) {
     return (
@@ -82,8 +87,54 @@ export default function StockDetailPage() {
             <p className="mt-2 max-w-3xl text-sm text-app-text">{company.organ_name ?? company.company_name ?? 'N/A'}</p>
           </div>
           <div className="md:text-right">
-            <p className="font-mono text-3xl font-bold text-app-heading">{formatPrice(company.latest_close)}</p>
+            <div className="flex flex-wrap items-center gap-3 md:justify-end">
+              <p className="font-mono text-3xl font-bold text-app-heading">{formatPrice(company.latest_close)}</p>
+              <NewsSignalBadge symbol={ticker} />
+            </div>
             <p className="mt-1 text-xs text-app-muted">Giá đóng cửa / ngày {formatDate(company.latest_trading_date)}</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-app-border bg-panel-dark p-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-app-heading">Khoảng ngày dữ liệu</h2>
+            <p className="mt-1 text-xs text-app-muted">
+              Áp dụng cho giá, chỉ báo, bảng giá, khối ngoại, tin theo phiên và BCTC theo ngày công bố.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="grid gap-1">
+              <span className="text-[11px] text-app-muted">Từ ngày</span>
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(event) => setFromDate(event.target.value)}
+                className="h-9 rounded-md border border-app-border bg-app-input px-3 text-sm text-app-heading outline-none focus:border-accent"
+              />
+            </label>
+            <label className="grid gap-1">
+              <span className="text-[11px] text-app-muted">Đến ngày</span>
+              <input
+                type="date"
+                value={toDate}
+                onChange={(event) => setToDate(event.target.value)}
+                className="h-9 rounded-md border border-app-border bg-app-input px-3 text-sm text-app-heading outline-none focus:border-accent"
+              />
+            </label>
+            {(fromDate || toDate) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFromDate('')
+                  setToDate('')
+                }}
+                className="h-9 rounded-md border border-app-border px-3 text-xs text-app-muted hover:text-app-heading"
+              >
+                Xóa lọc
+              </button>
+            )}
           </div>
         </div>
       </section>
@@ -92,6 +143,7 @@ export default function StockDetailPage() {
         <TabsList>
           <TabsTrigger value="overview">Tổng quan</TabsTrigger>
           <TabsTrigger value="chart">Biểu đồ</TabsTrigger>
+          <TabsTrigger value="board">Bảng giá</TabsTrigger>
           <TabsTrigger value="indicators">Chỉ báo</TabsTrigger>
           <TabsTrigger value="financials">Tài chính</TabsTrigger>
           <TabsTrigger value="news">Tin tức</TabsTrigger>
@@ -108,7 +160,6 @@ export default function StockDetailPage() {
                 { label: 'Năm thành lập', value: company.established_year?.toString() },
                 { label: 'Ngày niêm yết', value: formatDate(company.listed_date) },
                 { label: 'Website', value: company.website },
-                { label: 'Vốn điều lệ', value: formatBillionVnd(company.charter_capital) },
               ].map((item) => (
                 <div key={item.label} className="flex justify-between gap-4 border-b border-app-border pb-2 last:border-0">
                   <dt className="text-xs text-app-muted">{item.label}</dt>
@@ -152,12 +203,21 @@ export default function StockDetailPage() {
 
         <TabsContent value="chart" className="mt-4 rounded-lg border border-app-border bg-card-dark p-5">
           <h2 className="mb-4 text-sm font-semibold text-app-heading">Biểu đồ giá</h2>
-          <PriceChart symbol={ticker} />
+          <PriceChart symbol={ticker} fromDate={fromDate} toDate={toDate} />
+        </TabsContent>
+
+        <TabsContent value="board" className="mt-4 grid gap-5">
+          <section className="rounded-lg border border-app-border bg-card-dark p-5">
+            <ForeignFlowPanel symbol={ticker} fromDate={fromDate} toDate={toDate} />
+          </section>
+          <section className="rounded-lg border border-app-border bg-card-dark p-5">
+            <PriceBoardTable symbol={ticker} fromDate={fromDate} toDate={toDate} />
+          </section>
         </TabsContent>
 
         <TabsContent value="indicators" className="mt-4 rounded-lg border border-app-border bg-card-dark p-5">
           <h2 className="mb-4 text-sm font-semibold text-app-heading">Chỉ báo kỹ thuật</h2>
-          <IndicatorChart symbol={ticker} />
+          <IndicatorChart symbol={ticker} fromDate={fromDate} toDate={toDate} />
         </TabsContent>
 
         <TabsContent value="financials" className="mt-4 rounded-lg border border-app-border bg-card-dark p-5">
@@ -167,12 +227,12 @@ export default function StockDetailPage() {
 
         <TabsContent value="news" className="mt-4 rounded-lg border border-app-border bg-card-dark p-5">
           <h2 className="mb-4 text-sm font-semibold text-app-heading">Tin tức và sắc thái</h2>
-          <NewsPanel symbol={ticker} />
+          <NewsPanel symbol={ticker} fromDate={fromDate} toDate={toDate} />
         </TabsContent>
 
         <TabsContent value="bctc" className="mt-4 rounded-lg border border-app-border bg-card-dark p-5">
           <h2 className="mb-4 text-sm font-semibold text-app-heading">Báo cáo tài chính PDF</h2>
-          <BctcPanel symbol={ticker} />
+          <BctcPanel symbol={ticker} fromDate={fromDate} toDate={toDate} />
         </TabsContent>
       </Tabs>
     </PageWrapper>

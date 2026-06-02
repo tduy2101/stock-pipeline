@@ -8,12 +8,21 @@ import { formatBytes, formatDate } from '@/utils/formatters'
 
 interface BctcPanelProps {
   symbol: string
+  fromDate?: string
+  toDate?: string
 }
 
-export function BctcPanel({ symbol }: BctcPanelProps) {
+export function BctcPanel({ symbol, fromDate, toDate }: BctcPanelProps) {
   const [year, setYear] = useState<number | undefined>(undefined)
-  const allDocs = useBctc(symbol)
-  const filteredDocs = useBctc(symbol, year)
+  const allDocs = useBctc(symbol, {
+    from: fromDate || undefined,
+    to: toDate || undefined,
+  })
+  const filteredDocs = useBctc(symbol, {
+    year,
+    from: fromDate || undefined,
+    to: toDate || undefined,
+  })
   const data = year == null ? allDocs.data : filteredDocs.data
   const isLoading = year == null ? allDocs.isLoading : filteredDocs.isLoading
 

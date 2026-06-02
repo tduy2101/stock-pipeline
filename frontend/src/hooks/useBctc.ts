@@ -6,10 +6,13 @@ import {
   type BctcArchiveParams,
 } from '@/api/bctc'
 
-export const useBctc = (symbol: string, year?: number) =>
+export const useBctc = (
+  symbol: string,
+  params?: Pick<BctcArchiveParams, 'year' | 'from' | 'to'>,
+) =>
   useQuery({
-    queryKey: ['bctc', symbol, year],
-    queryFn: () => fetchBctcDocuments(symbol, year),
+    queryKey: ['bctc', symbol, params],
+    queryFn: () => fetchBctcDocuments(symbol, params),
     enabled: symbol.length > 0,
     staleTime: 5 * 60_000,
     retry: 2,

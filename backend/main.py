@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.database import close_pool
 from backend.routers import (
+    board,
     bctc,
     companies,
     financials,
@@ -36,6 +37,7 @@ app.include_router(companies.router)
 app.include_router(prices.router)
 app.include_router(indicators.router)
 app.include_router(financials.router)
+app.include_router(board.router)
 app.include_router(news.router)
 app.include_router(bctc.router)
 

@@ -58,6 +58,8 @@ def get_indicators(
                     bb_upper,
                     bb_middle,
                     bb_lower,
+                    volume_ma20,
+                    obv,
                     stddev_pop(daily_return) OVER (
                         PARTITION BY ticker
                         ORDER BY trading_date

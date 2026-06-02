@@ -1007,3 +1007,79 @@ Thứ tự bắt buộc: Bronze → Silver files → load `silver.*` → `dbt ru
 - `backend/schemas/` — contract JSON API
 - `frontend/src/api/stocks.ts`, `frontend/src/api/market.ts` — client gọi API
 - `frontend/src/pages/` — Dashboard & Stock detail
+
+---
+
+## 14. Nâng cấp luồng Structured (2026-06)
+
+### 14.1. Models mới
+
+| Model | Mô tả |
+|---|---|
+| `mart_price_board` | Bảng giá: bid/ask 3 bước, foreign flow, spread — từ `stg_price_board` |
+| `mart_financial_summary` | Financial ratio pivot wide — thay thế raw long table cho API |
+
+### 14.2. Models sửa
+
+| Model | Thay đổi |
+|---|---|
+| `mart_company_profile` | Thêm `free_float_percentage`, `free_float`, `number_of_employees`, `founded_date`, `ceo_name`, `ceo_position`, `outstanding_shares`, `auditor` |
+| `int_price_indicator` | Thêm `volume_ma20`, `obv` |
+| `fact_price_daily` | Expose `volume_ma20`, `obv` từ intermediate |
+| `mart_stock_daily` | Join sang `mart_stock_news_signal`; thêm `weighted_sentiment`, `news_signal`, `top_articles` |
+| `mart_bctc_documents` | Thêm `canonical_priority`, `normalized_title` cho sort/search |
+
+### 14.3. Endpoints mới
+
+| Endpoint | Nguồn | Mô tả |
+|---|---|---|
+| `GET /board/{symbol}` | `mart_price_board` | Bảng giá lịch sử |
+| `GET /board/{symbol}/foreign-flow` | `mart_price_board` | Khối ngoại buy/sell/net theo ngày |
+
+### 14.4. Endpoint sửa
+
+| Endpoint | Trước | Sau |
+|---|---|---|
+| `GET /financials/{symbol}` | `stg_financial_ratio` long format | `mart_financial_summary` wide format |
+| `GET /companies/{symbol}` | Thiếu nhiều trường profile | Thêm free-float, CEO, employees, auditor |
+| `GET /indicators/{symbol}` | MA/RSI/MACD/Bollinger | Thêm `volume_ma20`, `obv` |
+
+---
+
+## 15. Current Structured/API/UI Behavior (2026-06-02)
+
+This section supersedes older notes that say `price_board` has no UI/API or
+that `/financials/{symbol}` reads raw `stg_financial_ratio` directly.
+
+### 15.1. Current Gold outputs
+
+| Output | Grain | Purpose |
+|---|---|---|
+| `mart_market_overview` | `trading_date` | Dashboard index cards, breadth, top movers. API can select a specific session by `?date=`. |
+| `mart_stock_daily` | `ticker + trading_date` | Stock OHLCV, indicators, and mapped news signal fields. |
+| `mart_price_board` | `symbol + trading_date` | Stock price-board tab and foreign-flow panel. |
+| `mart_financial_summary` | `ticker + period_type + period` | Financial tab in wide format. Quarterly rows are source rows; annual rows are derived from the latest available quarter in each year if raw annual data is missing. |
+| `mart_company_profile` | `ticker` | Stock profile and key metrics. The UI intentionally hides `charter_capital` because current data is not reliable enough to display. |
+
+### 15.2. Date filters
+
+| Page/section | API | DB date field |
+|---|---|---|
+| Dashboard overview | `/market/overview?date=YYYY-MM-DD` | `mart_market_overview.trading_date` |
+| Stock price chart | `/prices/{symbol}?from=&to=` | `mart_stock_daily.trading_date` |
+| Stock indicators | `/indicators/{symbol}?from=&to=` | `mart_stock_daily.trading_date` |
+| Stock price board | `/board/{symbol}?from=&to=` | `mart_price_board.trading_date` |
+| Foreign flow | `/board/{symbol}/foreign-flow?from=&to=` | `mart_price_board.trading_date` |
+| Stock news signal | `/news/{symbol}?from=&to=` | `mart_stock_news_signal.trading_date` |
+| Stock BCTC | `/bctc/{symbol}?from=&to=` | `mart_bctc_documents.published_at::date` |
+
+The stock-detail page uses one date range filter and passes it to every section
+that has a date-aware API. The dashboard has a separate single-session date
+filter for market overview.
+
+### 15.3. UI behavior
+
+- `PriceChart` renders `open`, `high`, `low`, and `close` lines. The hover tooltip also shows `volume`.
+- `FinancialTable` reads `mart_financial_summary`, filters out rows that have no visible metric values, and supports `quarter`, `annual`, and `all` tabs.
+- Stock-detail price-board data is from `mart_price_board`, not an API mock or hard-coded value.
+- Main news archive previews full article `body_text` only when `body_text` exists; articles without body text do not show a preview action.

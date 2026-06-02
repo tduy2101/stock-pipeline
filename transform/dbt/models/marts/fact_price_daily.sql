@@ -28,6 +28,8 @@ select
   i.bb_middle,
   i.bb_upper,
   i.bb_lower,
+  i.volume_ma20,
+  i.obv,
   i.calculated_at
 from {{ ref('stg_price') }} as p
 left join {{ ref('int_price_indicator') }} as i

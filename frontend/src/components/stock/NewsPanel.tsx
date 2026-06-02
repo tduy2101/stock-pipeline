@@ -2,28 +2,69 @@ import { ExternalLink } from 'lucide-react'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { SentimentBadge } from '@/components/shared/SentimentBadge'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useNews, useNewsArticles } from '@/hooks/useNews'
-import type { NewsArticleRow } from '@/types'
+import { useNewsSignal } from '@/hooks/useNews'
+import type { NewsSignalRow, TopArticle } from '@/types'
 import { formatDate, formatPrice } from '@/utils/formatters'
 
 interface NewsPanelProps {
   symbol: string
+  fromDate?: string
+  toDate?: string
 }
 
-const articleSnippet = (article: NewsArticleRow): string =>
-  article.summary?.trim() ||
-  article.body_text?.trim() ||
-  'Chưa có tóm tắt nội dung. Mở bài gốc để xem chi tiết.'
+function SentimentBar({ row }: { row: NewsSignalRow }) {
+  const total = row.news_count || 1
+  const positiveWidth = ((row.positive_count ?? 0) / total) * 100
+  const negativeWidth = ((row.negative_count ?? 0) / total) * 100
+  const neutralWidth = Math.max(0, 100 - positiveWidth - negativeWidth)
 
-export function NewsPanel({ symbol }: NewsPanelProps) {
-  const daily = useNews(symbol, { page_size: 60 })
-  const articles = useNewsArticles(symbol, { page_size: 100 })
-  const dailyRows = daily.data?.data ?? []
-  const articleRows = articles.data?.data ?? []
+  return (
+    <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-app-hover">
+      <div className="bg-price-up" style={{ width: `${positiveWidth}%` }} />
+      <div className="bg-app-muted" style={{ width: `${neutralWidth}%` }} />
+      <div className="bg-price-down" style={{ width: `${negativeWidth}%` }} />
+    </div>
+  )
+}
 
-  if (daily.isLoading || articles.isLoading) return <Skeleton className="h-96" />
+function ArticleCard({ article }: { article: TopArticle }) {
+  return (
+    <a
+      href={article.url}
+      target="_blank"
+      rel="noreferrer"
+      className="block rounded-lg border border-app-border bg-app-hover p-3 transition-colors hover:border-accent/50 hover:bg-app-input"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="line-clamp-2 text-sm font-medium leading-6 text-app-heading">
+            {article.title}
+          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-app-muted">
+            <SentimentBadge label={article.sentiment ?? null} />
+            {article.relevance === 'title' && (
+              <span className="text-accent">nhắc trong tiêu đề</span>
+            )}
+            {article.published_at && <span>{formatDate(article.published_at)}</span>}
+          </div>
+        </div>
+        <ExternalLink className="mt-1 shrink-0 text-app-muted" size={14} />
+      </div>
+    </a>
+  )
+}
 
-  if (dailyRows.length === 0 && articleRows.length === 0) {
+export function NewsPanel({ symbol, fromDate, toDate }: NewsPanelProps) {
+  const { data, isLoading } = useNewsSignal(symbol, {
+    page_size: 30,
+    from: fromDate || undefined,
+    to: toDate || undefined,
+  })
+  const rows = data?.data ?? []
+
+  if (isLoading) return <Skeleton className="h-96" />
+
+  if (rows.length === 0) {
     return (
       <EmptyState
         message="Không có tin tức cho ticker này"
@@ -33,95 +74,63 @@ export function NewsPanel({ symbol }: NewsPanelProps) {
   }
 
   return (
-    <div className="grid gap-5">
-      <section>
-        <div className="mb-2 flex items-center justify-between gap-3">
-          <h3 className="text-sm font-semibold text-app-heading">Sắc thái theo ngày</h3>
-          <span className="text-xs text-app-muted">{dailyRows.length} ngày</span>
-        </div>
-        {dailyRows.length === 0 ? (
-          <EmptyState message="Không có dữ liệu tổng hợp sắc thái" />
-        ) : (
-          <div className="overflow-hidden rounded-lg border border-app-border">
-            <table className="w-full min-w-[640px] text-sm">
-              <thead className="bg-app-table-head text-xs uppercase text-app-muted">
-                <tr>
-                  <th className="px-3 py-2 text-left">Ngày</th>
-                  <th className="px-3 py-2 text-right">Số tin</th>
-                  <th className="px-3 py-2 text-right">Điểm</th>
-                  <th className="px-3 py-2 text-center">Sắc thái</th>
-                  <th className="px-3 py-2 text-right">Tích cực</th>
-                  <th className="px-3 py-2 text-right">Tiêu cực</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-app-border bg-card-dark">
-                {dailyRows.slice(0, 12).map((row) => (
-                  <tr key={row.published_date} className="hover:bg-app-hover">
-                    <td className="px-3 py-2 text-app-text">{formatDate(row.published_date)}</td>
-                    <td className="px-3 py-2 text-right font-mono text-app-heading">{row.news_count ?? 0}</td>
-                    <td className="px-3 py-2 text-right font-mono text-app-text">{formatPrice(row.avg_sentiment_score)}</td>
-                    <td className="px-3 py-2 text-center">
-                      <SentimentBadge label={row.dominant_sentiment} />
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono text-price-up">{row.positive_count ?? 0}</td>
-                    <td className="px-3 py-2 text-right font-mono text-price-down">{row.negative_count ?? 0}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      <section>
-        <div className="mb-2 flex items-center justify-between gap-3">
-          <h3 className="text-sm font-semibold text-app-heading">Bài báo gần đây</h3>
-          <span className="text-xs text-app-muted">{articles.data?.total ?? articleRows.length} bài</span>
-        </div>
-        {articleRows.length === 0 ? (
-          <EmptyState
-            message="Không có danh sách bài báo"
-            subMessage="Aggregate vẫn có thể tồn tại nếu article mart chưa được build lại"
-          />
-        ) : (
-          <div className="grid gap-3">
-            {articleRows.map((article) => (
-              <article
-                key={article.article_id}
-                className="rounded-lg border border-app-border bg-card-dark p-4 transition-colors hover:bg-app-hover"
+    <div className="grid gap-4">
+      {rows.map((row) => (
+        <section
+          key={row.trading_date}
+          className="overflow-hidden rounded-lg border border-app-border bg-card-dark"
+        >
+          <div className="flex flex-col gap-3 border-b border-app-border bg-app-hover px-4 py-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-sm font-semibold text-app-heading">
+                {formatDate(row.trading_date)}
+              </span>
+              <SentimentBadge label={row.dominant_sentiment} />
+              {row.news_signal && row.news_signal !== 'neutral' && (
+                <span
+                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                    row.news_signal === 'buy_signal'
+                      ? 'bg-price-up/10 text-price-up'
+                      : 'bg-price-down/10 text-price-down'
+                  }`}
+                >
+                  {row.news_signal === 'buy_signal' ? 'Tích cực' : 'Tiêu cực'}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-3 text-xs text-app-muted">
+              <span>{row.news_count} tin</span>
+              <span className="font-mono">
+                avg {formatPrice(row.avg_sentiment_score)}
+              </span>
+              <span
+                className={`font-mono ${
+                  (row.weighted_sentiment ?? 0) > 0
+                    ? 'text-price-up'
+                    : (row.weighted_sentiment ?? 0) < 0
+                      ? 'text-price-down'
+                      : 'text-app-muted'
+                }`}
               >
-                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div className="min-w-0">
-                    <div className="mb-2 flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-xs font-semibold text-accent">{article.ticker ?? symbol}</span>
-                      <span className="text-xs text-app-muted">{article.source ?? 'Không rõ nguồn'}</span>
-                      <span className="text-xs text-app-subtle">{formatDate(article.published_at ?? article.published_date)}</span>
-                      <SentimentBadge label={article.sentiment_label} />
-                    </div>
-                    <h4 className="line-clamp-2 text-sm font-semibold leading-6 text-app-heading">
-                      {article.title}
-                    </h4>
-                    <p className="mt-2 line-clamp-3 text-sm leading-6 text-app-text">
-                      {articleSnippet(article)}
-                    </p>
-                  </div>
-                  {article.url && (
-                    <a
-                      href={article.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-accent/50 px-3 text-xs font-medium text-accent transition-colors hover:bg-accent hover:text-white"
-                    >
-                      <ExternalLink size={14} />
-                      Xem bài gốc
-                    </a>
-                  )}
-                </div>
-              </article>
-            ))}
+                weighted {formatPrice(row.weighted_sentiment)}
+              </span>
+            </div>
           </div>
-        )}
-      </section>
+
+          <div className="grid gap-3 p-4">
+            <SentimentBar row={row} />
+            {row.top_articles?.length ? (
+              <div className="grid gap-2">
+                {row.top_articles.map((article) => (
+                  <ArticleCard key={article.article_id} article={article} />
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-app-muted">Không có bài nổi bật trong phiên này</p>
+            )}
+          </div>
+        </section>
+      ))}
     </div>
   )
 }

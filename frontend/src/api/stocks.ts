@@ -1,7 +1,7 @@
 import client from './client'
 import type {
   CompanyProfileResponse,
-  FinancialRatioRow,
+  FinancialSummaryRow,
   IndicatorRow,
   PaginatedResponse,
   PriceRow,
@@ -54,9 +54,9 @@ export const fetchIndicators = async (
 export const fetchFinancials = async (
   symbol: string,
   periodType?: string,
-): Promise<FinancialRatioRow[] | null> => {
+): Promise<FinancialSummaryRow[] | null> => {
   const params = periodType ? { period_type: periodType } : {}
-  const response = await client.get<FinancialRatioRow[] | null>(
+  const response = await client.get<FinancialSummaryRow[] | null>(
     `/financials/${symbol}`,
     { params },
   )

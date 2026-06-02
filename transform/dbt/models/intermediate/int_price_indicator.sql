@@ -10,6 +10,7 @@ with base as (
     ticker,
     trading_date,
     close,
+    volume,
     lag(close) over (
       partition by ticker
       order by trading_date
@@ -27,6 +28,7 @@ returns as (
     ticker,
     trading_date,
     close,
+    volume,
     prev_close,
     row_num,
     case
@@ -35,7 +37,12 @@ returns as (
       else null
     end as daily_return,
     greatest(close - prev_close, 0) as gain,
-    greatest(prev_close - close, 0) as loss
+    greatest(prev_close - close, 0) as loss,
+    case
+      when close > prev_close then volume
+      when close < prev_close then -volume
+      else 0
+    end as signed_volume
   from base
 ),
 
@@ -44,6 +51,8 @@ windows as (
     ticker,
     trading_date,
     close,
+    volume,
+    signed_volume,
     prev_close,
     row_num,
     daily_return,
@@ -86,7 +95,12 @@ windows as (
       partition by ticker
       order by trading_date
       rows between 19 preceding and current row
-    ) as std20
+    ) as std20,
+    avg(volume) over (
+      partition by ticker
+      order by trading_date
+      rows between 19 preceding and current row
+    ) as volume_ma20
   from returns
 ),
 
@@ -94,6 +108,7 @@ indicators as (
   select
     ticker,
     trading_date,
+    signed_volume,
     daily_return,
     case when row_num >= 7 then ma7_raw else null end as ma7,
     case when row_num >= 20 then ma20_raw else null end as ma20,
@@ -106,7 +121,8 @@ indicators as (
     case when row_num >= 26 then sma12 - sma26 else null end as macd_line,
     case when row_num >= 20 then ma20_raw else null end as bb_middle,
     case when row_num >= 20 then ma20_raw + 2 * std20 else null end as bb_upper,
-    case when row_num >= 20 then ma20_raw - 2 * std20 else null end as bb_lower
+    case when row_num >= 20 then ma20_raw - 2 * std20 else null end as bb_lower,
+    volume_ma20
   from windows
 ),
 
@@ -114,6 +130,7 @@ final as (
   select
     ticker,
     trading_date,
+    signed_volume,
     daily_return,
     ma7,
     ma20,
@@ -127,7 +144,8 @@ final as (
     ) as macd_signal,
     bb_middle,
     bb_upper,
-    bb_lower
+    bb_lower,
+    volume_ma20
   from indicators
 )
 
@@ -145,6 +163,11 @@ select
   bb_middle,
   bb_upper,
   bb_lower,
+  volume_ma20,
+  sum(signed_volume) over (
+    partition by ticker
+    order by trading_date
+    rows between unbounded preceding and current row
+  ) as obv,
   current_timestamp as calculated_at
 from final
-

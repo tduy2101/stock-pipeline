@@ -33,11 +33,13 @@ sources:
           - name: year
           - name: period_key
           - name: title
+          - name: normalized_title
           - name: published_at
           - name: url_pdf
           - name: pdf_path
           - name: file_size
           - name: doc_class
+          - name: canonical_priority
           - name: is_consolidated
           - name: display_status
           - name: is_available_for_web

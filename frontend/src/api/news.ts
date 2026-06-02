@@ -1,27 +1,48 @@
 import client from './client'
-import type { NewsArticleRow, NewsDailyRow, PaginatedResponse } from '@/types'
+import type {
+  NewsArticleRow,
+  NewsSignalRow,
+  NewsSignalSummary,
+  PaginatedResponse,
+} from '@/types'
 import type { DatePageParams } from './stocks'
 
 export interface NewsArchiveParams extends DatePageParams {
   ticker?: string
   q?: string
   sentiment?: string
+  relevance?: string
+}
+
+export interface NewsArticleParams extends DatePageParams {
+  relevance?: string
 }
 
 export const fetchNews = async (
   symbol: string,
   params?: DatePageParams,
-): Promise<PaginatedResponse<NewsDailyRow> | null> => {
-  const response = await client.get<PaginatedResponse<NewsDailyRow> | null>(
+): Promise<PaginatedResponse<NewsSignalRow> | null> => {
+  const response = await client.get<PaginatedResponse<NewsSignalRow> | null>(
     `/news/${symbol}`,
     { params },
   )
   return response.data
 }
 
+export const fetchNewsSignal = fetchNews
+
+export const fetchNewsSignalSummary = async (
+  symbol: string,
+): Promise<NewsSignalSummary | null> => {
+  const response = await client.get<NewsSignalSummary | null>(
+    `/news/${symbol}/signal`,
+  )
+  return response.data
+}
+
 export const fetchNewsArticles = async (
   symbol: string,
-  params?: DatePageParams,
+  params?: NewsArticleParams,
 ): Promise<PaginatedResponse<NewsArticleRow> | null> => {
   const response = await client.get<PaginatedResponse<NewsArticleRow> | null>(
     `/news/${symbol}/articles`,

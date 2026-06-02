@@ -60,9 +60,15 @@ models:
   - name: stg_news
     columns:
       - name: article_id
-        tests: [not_null, unique]
+        tests: [not_null]
+      - name: ticker
+        tests: [not_null]
       - name: published_date
         tests: [not_null]
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [article_id, ticker]
 
   - name: stg_bctc_pdf_meta
     columns:

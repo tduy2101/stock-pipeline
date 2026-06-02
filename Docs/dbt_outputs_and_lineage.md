@@ -325,3 +325,62 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 - Model & columns lấy từ `transform/dbt/models/**` (DBT SQL hiện tại).
 - Nếu chỉnh output layout, hãy dựa vào các bảng Gold ở mục 1–3.
 - Khi thay đổi UI search, ưu tiên `mart_ticker_directory` làm nguồn aggregator.
+
+---
+
+# 7) Update 2026-06-02: Current Gold/API/UI Lineage
+
+If older sections above mention direct `stg_financial_ratio` API reads,
+close-only stock charts, no price-board API, or news joined only by
+`published_date`, treat those as historical notes. The current running flow is:
+
+## 7.1 Structured marts
+
+| Model | Grain | Current use |
+|---|---|---|
+| `int_price_indicator` | `ticker + trading_date` | Return, MA, RSI, MACD, Bollinger, `volume_ma20`, `obv`. |
+| `fact_price_daily` | `ticker + trading_date` | OHLCV + indicators; base for `mart_stock_daily`. |
+| `mart_stock_daily` | `ticker + trading_date` | API `/prices/{symbol}` and `/indicators/{symbol}`; carries mapped news fields from `mart_stock_news_signal`. |
+| `mart_market_overview` | `trading_date` | API `/market/overview`; optional `date`, otherwise latest session. |
+| `mart_price_board` | `symbol + trading_date` | API `/board/{symbol}` and `/board/{symbol}/foreign-flow`; filters by `trading_date`. |
+| `mart_financial_summary` | `ticker + period_type + period` | API `/financials/{symbol}`; wide financial ratios. Quarterly rows come from source data; annual rows are derived from the latest available quarter in each year when raw annual rows are absent. |
+
+## 7.2 News marts
+
+| Model | Grain | Current use |
+|---|---|---|
+| `stg_news` | `article_id + ticker` | Explodes `ticker` plus `ticker_mentions`; adds `ticker_relevance`, `source_tier`. |
+| `fact_news_article` | `article_id + ticker` | Article-level API for `/news/articles` and `/news/{symbol}/articles`; includes title, summary, body text, URL, sentiment, relevance, and source tier. |
+| `int_news_sentiment_daily` | `ticker + published_date` | Legacy/simple aggregate kept for compatibility. |
+| `mart_stock_news_daily` | `ticker + published_date` | Legacy/simple daily aggregate. |
+| `mart_stock_news_signal` | `ticker + trading_date` | Main stock-detail news source. Maps articles to trading sessions, computes `avg_sentiment_score`, `weighted_sentiment`, `news_signal`, `dominant_sentiment`, and `top_articles`. |
+
+`mart_stock_news_signal.trading_date` can differ from article `published_date`
+because weekend articles and articles after the cutoff are mapped to the next
+appropriate trading session.
+
+## 7.3 BCTC marts
+
+| Model | Grain | Current use |
+|---|---|---|
+| `stg_bctc_pdf_meta` | `doc_id` | Adds `normalized_title` and `canonical_priority`. |
+| `mart_bctc_documents` | `doc_id` | API `/bctc/documents` and `/bctc/{symbol}`; filters by `published_at::date`. |
+
+## 7.4 Frontend-facing lineage
+
+| UI area | API | Gold source | Date basis |
+|---|---|---|---|
+| Dashboard overview | `/market/overview?date=` | `mart_market_overview` | `trading_date` |
+| Stock price chart | `/prices/{symbol}?from=&to=` | `mart_stock_daily` | `trading_date` |
+| Stock indicators | `/indicators/{symbol}?from=&to=` | `mart_stock_daily` | `trading_date` |
+| Stock price board | `/board/{symbol}?from=&to=` | `mart_price_board` | `trading_date` |
+| Foreign flow | `/board/{symbol}/foreign-flow?from=&to=` | `mart_price_board` | `trading_date` |
+| Stock financials | `/financials/{symbol}?period_type=` | `mart_financial_summary` | `period`, `year`, `quarter` |
+| Stock news signal | `/news/{symbol}?from=&to=` | `mart_stock_news_signal` | mapped `trading_date` |
+| News archive / preview | `/news/articles?from=&to=` | `fact_news_article` | `published_date` |
+| BCTC archive/detail | `/bctc/documents`, `/bctc/{symbol}` | `mart_bctc_documents` | `published_at::date` |
+
+UI note: stock profile pages no longer display `charter_capital` because the
+current dataset does not provide reliable display data for that field. The stock
+price chart renders `open`, `high`, `low`, and `close`, with `volume` in the
+hover tooltip.

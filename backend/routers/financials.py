@@ -5,12 +5,12 @@ from psycopg2.extensions import connection as PgConn
 
 from backend.database import fetchall_as_dict
 from backend.dependencies import get_db
-from backend.schemas.financial import FinancialRatioRow
+from backend.schemas.financial import FinancialSummaryRow
 
 router = APIRouter(prefix="/financials", tags=["financials"])
 
 
-@router.get("/{symbol}", response_model=list[FinancialRatioRow])
+@router.get("/{symbol}", response_model=list[FinancialSummaryRow])
 def get_financials(
     symbol: str,
     period_type: str | None = Query(
@@ -29,14 +29,40 @@ def get_financials(
                 period_type,
                 year,
                 quarter,
-                item_code,
-                item_name,
-                value
-            FROM gold.stg_financial_ratio
+                pe_ratio,
+                pb_ratio,
+                ps_ratio,
+                ev_ebit,
+                ev_ebitda,
+                eps,
+                roe,
+                roe_trailing,
+                roa,
+                roa_trailing,
+                roce,
+                gross_profit_margin,
+                net_profit_margin,
+                ebit_margin,
+                ebitda_margin,
+                current_ratio,
+                quick_ratio,
+                cash_ratio,
+                debt_to_equity,
+                debt_to_assets,
+                liabilities_to_equity,
+                liabilities_to_assets,
+                revenue_growth,
+                gross_profit_growth,
+                profit_growth,
+                dividend_yield,
+                dividend_per_share,
+                book_value_per_share,
+                cash_flow_per_share,
+                beta
+            FROM gold.mart_financial_summary
             WHERE ticker = %s
               AND (%s IS NULL OR period_type = %s)
-              AND value IS NOT NULL
-            ORDER BY period DESC, item_code
+            ORDER BY period DESC
             """,
             (ticker, period_type, period_type),
         )
@@ -44,4 +70,4 @@ def get_financials(
 
     if not rows:
         raise HTTPException(404, f"Khong co du lieu tai chinh: {symbol}")
-    return [FinancialRatioRow(**row) for row in rows]
+    return [FinancialSummaryRow(**row) for row in rows]

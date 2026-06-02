@@ -18,6 +18,8 @@ import { formatPrice } from '@/utils/formatters'
 
 interface IndicatorChartProps {
   symbol: string
+  fromDate?: string
+  toDate?: string
 }
 
 type IndicatorKey = 'ma7' | 'ma20' | 'ma50' | 'rsi14' | 'macd_line'
@@ -33,8 +35,12 @@ const OPTIONS: Array<{ key: IndicatorKey; label: string; color: string }> = [
 const sortAscending = (rows: IndicatorRow[]): IndicatorRow[] =>
   [...rows].sort((a, b) => a.trading_date.localeCompare(b.trading_date))
 
-export function IndicatorChart({ symbol }: IndicatorChartProps) {
-  const { data, isLoading } = useIndicators(symbol, { page_size: 500 })
+export function IndicatorChart({ symbol, fromDate, toDate }: IndicatorChartProps) {
+  const { data, isLoading } = useIndicators(symbol, {
+    page_size: 500,
+    from: fromDate || undefined,
+    to: toDate || undefined,
+  })
   const { theme } = useTheme()
   const chartTheme = CHART_THEME[theme]
   const [active, setActive] = useState<Record<IndicatorKey, boolean>>({

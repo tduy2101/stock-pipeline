@@ -1,11 +1,13 @@
 import { IndexCard } from './IndexCard'
 import { TopMoversTable } from './TopMoversTable'
+import { useState } from 'react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useMarketOverview } from '@/hooks/useMarketOverview'
-import { formatBillionVnd, formatShares } from '@/utils/formatters'
+import { formatBillionVnd, formatDate, formatShares } from '@/utils/formatters'
 
 export function MarketOverviewSection() {
-  const { data, isLoading } = useMarketOverview()
+  const [selectedDate, setSelectedDate] = useState('')
+  const { data, isLoading } = useMarketOverview(selectedDate || undefined)
 
   if (isLoading) {
     return (
@@ -22,6 +24,36 @@ export function MarketOverviewSection() {
 
   return (
     <section className="grid gap-6">
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-base font-semibold text-app-heading">Tổng quan thị trường</h2>
+          <p className="text-sm text-app-muted">
+            Phiên {formatDate(data?.trading_date)}; biến động được tính so với phiên giao dịch liền trước.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-xs text-app-muted" htmlFor="market-date">
+            Lọc phiên
+          </label>
+          <input
+            id="market-date"
+            type="date"
+            value={selectedDate}
+            onChange={(event) => setSelectedDate(event.target.value)}
+            className="h-9 rounded-md border border-app-border bg-app-input px-3 text-sm text-app-heading outline-none focus:border-accent"
+          />
+          {selectedDate && (
+            <button
+              type="button"
+              onClick={() => setSelectedDate('')}
+              className="h-9 rounded-md border border-app-border px-3 text-xs text-app-muted hover:text-app-heading"
+            >
+              Mới nhất
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <IndexCard name="VN-Index" close={data?.vnindex_close ?? null} dailyReturn={data?.vnindex_return ?? null} />
         <IndexCard name="VN30" close={data?.vn30_close ?? null} dailyReturn={data?.vn30_return ?? null} />

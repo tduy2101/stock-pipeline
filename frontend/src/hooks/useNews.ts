@@ -4,6 +4,9 @@ import {
   fetchMarketNews,
   fetchNews,
   fetchNewsArticles,
+  fetchNewsSignal,
+  fetchNewsSignalSummary,
+  type NewsArticleParams,
   type NewsArchiveParams,
 } from '@/api/news'
 import type { DatePageParams } from '@/api/stocks'
@@ -17,7 +20,25 @@ export const useNews = (symbol: string, params?: DatePageParams) =>
     retry: 2,
   })
 
-export const useNewsArticles = (symbol: string, params?: DatePageParams) =>
+export const useNewsSignal = (symbol: string, params?: DatePageParams) =>
+  useQuery({
+    queryKey: ['newsSignal', symbol, params],
+    queryFn: () => fetchNewsSignal(symbol, params),
+    enabled: symbol.length > 0,
+    staleTime: 5 * 60_000,
+    retry: 2,
+  })
+
+export const useNewsSignalSummary = (symbol: string) =>
+  useQuery({
+    queryKey: ['newsSignalSummary', symbol],
+    queryFn: () => fetchNewsSignalSummary(symbol),
+    enabled: symbol.length > 0,
+    staleTime: 5 * 60_000,
+    retry: 2,
+  })
+
+export const useNewsArticles = (symbol: string, params?: NewsArticleParams) =>
   useQuery({
     queryKey: ['newsArticles', symbol, params],
     queryFn: () => fetchNewsArticles(symbol, params),

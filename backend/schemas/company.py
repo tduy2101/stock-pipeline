@@ -14,6 +14,14 @@ class CompanyProfileResponse(BaseModel):
     industry: str | None
     sector: str | None
     charter_capital: int | None
+    free_float_percentage: float | None = None
+    free_float: float | None = None
+    number_of_employees: int | None = None
+    founded_date: date | None = None
+    ceo_name: str | None = None
+    ceo_position: str | None = None
+    outstanding_shares: float | None = None
+    auditor: str | None = None
     established_year: int | None
     listed_date: date | None
     website: str | None

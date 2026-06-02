@@ -15,6 +15,8 @@ export default function BctcArchivePage() {
   const [query, setQuery] = useState('')
   const [ticker, setTicker] = useState('')
   const [year, setYear] = useState('')
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
 
   const params = useMemo(
     () => ({
@@ -23,8 +25,10 @@ export default function BctcArchivePage() {
       q: query.trim() || undefined,
       ticker: ticker.trim().toUpperCase() || undefined,
       year: year ? Number(year) : undefined,
+      from: fromDate || undefined,
+      to: toDate || undefined,
     }),
-    [page, query, ticker, year],
+    [fromDate, page, query, ticker, toDate, year],
   )
 
   const { data, isLoading } = useAllBctcDocuments(params)
@@ -67,7 +71,7 @@ export default function BctcArchivePage() {
       </section>
 
       <section className="rounded-lg border border-app-border bg-panel-dark p-4">
-        <div className="grid gap-3 lg:grid-cols-[1fr_10rem_9rem]">
+        <div className="grid gap-3 lg:grid-cols-[1fr_10rem_9rem_10rem_10rem]">
           <label className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-app-muted" size={16} />
             <input
@@ -90,6 +94,24 @@ export default function BctcArchivePage() {
             inputMode="numeric"
             className="h-10 rounded-lg border border-app-border bg-app-input px-3 text-sm font-mono text-app-heading outline-none focus:border-accent"
           />
+          <label className="grid gap-1">
+            <span className="text-[11px] text-app-muted">Từ ngày công bố</span>
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(event) => updateFilter(setFromDate, event.target.value)}
+              className="h-10 rounded-lg border border-app-border bg-app-input px-3 text-sm text-app-heading outline-none focus:border-accent"
+            />
+          </label>
+          <label className="grid gap-1">
+            <span className="text-[11px] text-app-muted">Đến ngày công bố</span>
+            <input
+              type="date"
+              value={toDate}
+              onChange={(event) => updateFilter(setToDate, event.target.value)}
+              className="h-10 rounded-lg border border-app-border bg-app-input px-3 text-sm text-app-heading outline-none focus:border-accent"
+            />
+          </label>
         </div>
       </section>
 

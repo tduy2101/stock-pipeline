@@ -835,3 +835,89 @@ Thứ tự: **Bronze → Silver files → load `silver.news` → `dbt run` → A
 | Rerun Bronze cùng ngày | Silver + load + `dbt run` lại |
 | Lỗi unique `url` khi load | Hai `article_id` cùng URL — sửa upstream |
 | Giảm tải site | Hạ `NEWS_RATE_LIMIT_RPM`, cap feed/HTML |
+
+---
+
+## 15. Nâng cấp luồng News (2026-06)
+
+### 15.1. Thay đổi chính
+
+| Thành phần | Trước | Sau |
+|---|---|---|
+| `stg_news` | `coalesce(ticker, ticker_mentions[1])` — 1 mã/bài | `unnest(ticker_mentions)` — mỗi `(article_id, ticker)` là 1 dòng |
+| Coverage | ~154 cặp `(ticker, ngày)` từ 804 bài | ~500-1500 cặp, tùy số mã trong `ticker_mentions` |
+| `fact_news_article` | Không có relevance/tier | Thêm `ticker_relevance`, `source_tier` |
+| `mart_stock_news_daily` | Aggregate đơn giản, không có URL | Giữ backward-compat; UI/API chính chuyển sang `mart_stock_news_signal` |
+| `mart_stock_news_signal` | Không có | Mới: weighted sentiment, `news_signal`, `top_articles` JSONB |
+| Join với giá | `trading_date = published_date` | Join qua `mart_stock_news_signal.trading_date` đã map phiên |
+
+### 15.2. Model mới: `mart_stock_news_signal`
+
+- **Grain:** `ticker + trading_date` (phiên giao dịch)
+- **Mapping cuối tuần:** Tin thứ 7/CN → phiên thứ 2; tin sau 14:30 → phiên kế tiếp
+- **weighted_sentiment:** Có trọng số theo relevance (3/2/1), source tier (1.5/1.2/1.0), time-decay (half-life 48h)
+- **news_signal:** `buy_signal | sell_signal | neutral` — ngưỡng ±0.3 weighted_sentiment
+- **top_articles:** JSONB chứa tối đa 3 bài quan trọng nhất kèm title + url + sentiment
+
+### 15.3. Endpoint mới/sửa
+
+| Endpoint | Thay đổi |
+|---|---|
+| `GET /news/{symbol}` | Đọc `mart_stock_news_signal` thay vì `mart_stock_news_daily`; trả `top_articles` kèm URL |
+| `GET /news/{symbol}/signal` | Mới — trả signal nhanh nhất cho header UI |
+| `GET /news/{symbol}/articles` | Thêm filter `?relevance=title\|summary\|body` |
+
+### 15.4. Lưu ý vận hành
+
+- `stg_news` giờ có grain `(article_id, ticker)` — không còn unique trên `article_id`
+- `dbt test` đã đổi sang unique composite `(article_id, ticker)`
+- Ngưỡng `news_signal` (±0.3) cần calibrate sau khi có đủ dữ liệu thực tế
+- `mart_stock_news_daily` vẫn giữ lại để backward-compat; có thể deprecated sau khi UI/API ổn định
+
+---
+
+## 16. Current News UI/API Behavior (2026-06-02)
+
+This section supersedes older notes that describe stock news only as
+`ticker + published_date` aggregates or say stock detail reads only
+`mart_stock_news_daily`.
+
+### 16.1. Current Gold sources
+
+| Source | Grain | Used by |
+|---|---|---|
+| `gold.fact_news_article` | `article_id + ticker` | Main news archive, article search/filter, `/news/articles`, `/news/{symbol}/articles`. |
+| `gold.mart_stock_news_signal` | `ticker + trading_date` | Stock-detail news signal panel and `/news/{symbol}` / `/news/{symbol}/signal`. |
+| `gold.mart_stock_news_daily` | `ticker + published_date` | Backward-compatible simple aggregate; not the main stock-detail UI source. |
+
+`stg_news` now explodes one article into multiple ticker rows when
+`ticker_mentions` contains multiple symbols. Because of that,
+`fact_news_article` is unique by `(article_id, ticker)`, not by `article_id`
+alone.
+
+### 16.2. Date logic
+
+- Article archive filters use `fact_news_article.published_date`.
+- Stock-detail signal filters use `mart_stock_news_signal.trading_date`.
+- `mart_stock_news_signal.trading_date` maps articles to trading sessions:
+  weekend articles move to the next trading session, and articles after the
+  cutoff move to the next session instead of the same calendar date.
+
+### 16.3. Sentiment fields
+
+| Field | Meaning |
+|---|---|
+| `avg_sentiment_score` | Simple average of keyword sentiment scores for articles in the ticker/session group. |
+| `weighted_sentiment` | Weighted average. Higher weights are given to stronger ticker relevance (`title` > `summary` > `body`), higher source tier, and fresher articles. |
+| `dominant_sentiment` | Majority label by article count: `positive`, `negative`, or `neutral`. |
+| `news_signal` | Trading-session signal from `weighted_sentiment`: positive/buy when above the positive threshold, negative/sell when below the negative threshold, otherwise neutral. |
+
+The current sentiment method is keyword-based (`keyword_v1`), not an ML model.
+Positive/negative/neutral labels come from keyword score thresholds in the news
+Silver/dbt flow.
+
+### 16.4. Article content in UI
+
+- Stock-detail news signal uses `mart_stock_news_signal.top_articles`. The JSON currently stores compact article metadata such as title, URL, sentiment, publish time, relevance, and weight. It is meant for quick context, not full article reading.
+- The main news archive reads `fact_news_article`, which includes `title`, `summary`, and `body_text`.
+- The archive shows a Preview action only for rows where `body_text` exists. Clicking Preview opens the full `body_text`. Articles without body text skip the preview action.

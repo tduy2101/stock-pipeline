@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,6 +21,8 @@ def list_all_bctc_documents(
     ticker: str | None = Query(None, description="Filter by ticker."),
     year: int | None = Query(None, description="Filter by fiscal/report year."),
     q: str | None = Query(None, description="Search in document title."),
+    from_date: date | None = Query(None, alias="from"),
+    to_date: date | None = Query(None, alias="to"),
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     conn: PgConn = Depends(get_db),
@@ -34,13 +37,20 @@ def list_all_bctc_documents(
         year,
         q_filter,
         q_filter,
+        q_filter,
+        from_date,
+        from_date,
+        to_date,
+        to_date,
     )
 
     where_clause = """
       is_available_for_web = true
       AND (%s IS NULL OR ticker = %s)
       AND (%s IS NULL OR year = %s)
-      AND (%s IS NULL OR title ILIKE %s)
+      AND (%s IS NULL OR title ILIKE %s OR normalized_title ILIKE %s)
+      AND (%s IS NULL OR published_at::date >= %s)
+      AND (%s IS NULL OR published_at::date <= %s)
     """
 
     with conn.cursor() as cur:
@@ -62,8 +72,10 @@ def list_all_bctc_documents(
                 year,
                 period_key,
                 title,
+                normalized_title,
                 published_at,
                 doc_class,
+                canonical_priority,
                 is_consolidated,
                 display_status,
                 is_available_for_web,
@@ -71,7 +83,8 @@ def list_all_bctc_documents(
                 file_size
             FROM gold.mart_bctc_documents
             WHERE {where_clause}
-            ORDER BY published_at DESC NULLS LAST,
+            ORDER BY canonical_priority ASC NULLS LAST,
+                     published_at DESC NULLS LAST,
                      year DESC NULLS LAST,
                      doc_id
             LIMIT %s OFFSET %s
@@ -103,8 +116,10 @@ def list_recent_bctc_documents(
                 year,
                 period_key,
                 title,
+                normalized_title,
                 published_at,
                 doc_class,
+                canonical_priority,
                 is_consolidated,
                 display_status,
                 is_available_for_web,
@@ -112,7 +127,8 @@ def list_recent_bctc_documents(
                 file_size
             FROM gold.mart_bctc_documents
             WHERE is_available_for_web = true
-            ORDER BY published_at DESC NULLS LAST,
+            ORDER BY canonical_priority ASC NULLS LAST,
+                     published_at DESC NULLS LAST,
                      year DESC NULLS LAST,
                      doc_id
             LIMIT %s
@@ -128,6 +144,8 @@ def list_recent_bctc_documents(
 def list_bctc_documents(
     symbol: str,
     year: int | None = Query(None, description="Filter by fiscal/report year."),
+    from_date: date | None = Query(None, alias="from"),
+    to_date: date | None = Query(None, alias="to"),
     conn: PgConn = Depends(get_db),
 ):
     ticker = symbol.upper()
@@ -140,8 +158,10 @@ def list_bctc_documents(
                 year,
                 period_key,
                 title,
+                normalized_title,
                 published_at,
                 doc_class,
+                canonical_priority,
                 is_consolidated,
                 display_status,
                 is_available_for_web,
@@ -151,10 +171,13 @@ def list_bctc_documents(
             WHERE ticker = %s
               AND is_available_for_web = true
               AND (%s IS NULL OR year = %s)
+              AND (%s IS NULL OR published_at::date >= %s)
+              AND (%s IS NULL OR published_at::date <= %s)
             ORDER BY year DESC NULLS LAST,
+                     canonical_priority ASC NULLS LAST,
                      published_at DESC NULLS LAST
             """,
-            (ticker, year, year),
+            (ticker, year, year, from_date, from_date, to_date, to_date),
         )
         rows = fetchall_as_dict(cur)
 

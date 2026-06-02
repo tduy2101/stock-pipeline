@@ -1,4 +1,13 @@
-{{ config(materialized='table') }}
+{{
+  config(
+    materialized='table',
+    indexes=[
+      {'columns': ['ticker'], 'type': 'btree'},
+      {'columns': ['published_date'], 'type': 'btree'},
+      {'columns': ['ticker', 'published_date'], 'type': 'btree'}
+    ]
+  )
+}}
 
 select
   article_id,
@@ -14,5 +23,7 @@ select
   sentiment_score,
   sentiment_label,
   word_count,
-  language
+  language,
+  ticker_relevance,
+  source_tier
 from {{ ref('stg_news') }}

@@ -5,15 +5,16 @@ export interface BctcArchiveParams {
   ticker?: string
   year?: number
   q?: string
+  from?: string
+  to?: string
   page?: number
   page_size?: number
 }
 
 export const fetchBctcDocuments = async (
   symbol: string,
-  year?: number,
+  params?: Pick<BctcArchiveParams, 'year' | 'from' | 'to'>,
 ): Promise<BctcDocumentRow[] | null> => {
-  const params = year ? { year } : {}
   const response = await client.get<BctcDocumentRow[] | null>(`/bctc/${symbol}`, {
     params,
   })
