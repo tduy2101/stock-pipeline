@@ -10,4 +10,5 @@ select
   count(*) filter (where sentiment_label = 'neutral') as neutral_count,
   mode() within group (order by sentiment_label) as dominant_sentiment
 from {{ ref('stg_news') }}
+where ticker is not null
 group by ticker, published_date

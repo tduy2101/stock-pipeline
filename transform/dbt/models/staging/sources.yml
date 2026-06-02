@@ -18,6 +18,7 @@ sources:
           - name: ticker_mentions
           - name: title
           - name: summary
+          - name: body_text
           - name: url
           - name: published_at
           - name: published_date

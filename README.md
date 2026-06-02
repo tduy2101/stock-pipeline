@@ -1,29 +1,28 @@
-# Kiến trúc Medallion của Stock Pipeline
+# Stock Pipeline - Medallion Data Pipeline cho chứng khoán Việt Nam
 
-Dự án: **Ứng dụng pipeline dữ liệu và phân tích thị trường chứng khoán Việt Nam**.
+Cập nhật: 2026-06-01
 
-Trạng thái hiện tại: cập nhật đến **2026-05-25**. Pipeline đã được triển khai qua
-Bronze, Silver, PostgreSQL `silver`, và các mart Gold của dbt. FastAPI, Airflow và
-React vẫn là phần việc tương lai.
+Dự án xây dựng hệ thống Data Pipeline và ứng dụng tra cứu, phân tích thị
+trường chứng khoán Việt Nam đa nguồn. Kiến trúc hiện tại đi theo Medallion:
+Bronze lưu dữ liệu gần nguồn, Silver chuẩn hóa thành parquet sạch,
+PostgreSQL/TimescaleDB lưu warehouse, dbt build Gold marts, FastAPI phục vụ API
+read-only, và React/Vite hiển thị dashboard.
 
 ```text
-Tệp Bronze -> Tệp Silver -> PostgreSQL silver -> dbt gold -> API/dashboard
-parquet thô      parquet sạch     bảng kho dữ liệu      marts      tương lai
+Bronze raw parquet/PDF
+  -> Silver clean parquet
+  -> PostgreSQL schema silver
+  -> dbt schema gold
+  -> FastAPI read-only
+  -> React dashboard
 ```
 
-Ghi chú luồng chi tiết nằm trong `Summary Flow/`:
+## Trạng Thái Hiện Tại
 
-- `Summary Flow/STRUCTURED_DATA_FLOW_README.md`
-- `Summary Flow/NEWS_FLOW.md`
-- `Summary Flow/BCTC_PDF_FLOW.md`
-- `Summary Flow/GOLD_DBT_FLOW.md`
+Đã có:
 
-## Trạng thái hiện tại
-
-Đã triển khai:
-
-- Nạp Bronze cho dữ liệu có cấu trúc, tin tức và metadata PDF BCTC.
-- Biến đổi Silver cho 8 bộ dữ liệu:
+- Bronze ingestion cho 3 luồng: structured data, news, và BCTC PDF metadata.
+- Silver transforms cho 8 dataset:
   - `price`
   - `index_price`
   - `listing`
@@ -32,90 +31,143 @@ Ghi chú luồng chi tiết nằm trong `Summary Flow/`:
   - `price_board`
   - `news`
   - `bctc_pdf_meta`
-- Nhật ký audit biến đổi Silver tại `data-lake/silver/<dataset>/_runs.jsonl`.
-- Schema `silver` trên PostgreSQL/TimescaleDB với loader upsert idempotent.
-- Dự án dbt đọc `silver.*` và xây dựng schema `gold`.
-- Các mô hình Gold của dbt cho chỉ báo giá, cảm xúc tin tức, hồ sơ công ty,
-  tổng quan thị trường, cổ phiếu theo ngày, tin tức cổ phiếu theo ngày, và tìm kiếm
-  tài liệu BCTC.
-- Pytest có thể chạy từ thư mục gốc repo mà không cần đặt `PYTHONPATH` thủ công.
+- Audit log Silver tại `data-lake/silver/<dataset>/_runs.jsonl`.
+- PostgreSQL/TimescaleDB schema `silver` và `gold`.
+- Warehouse loader đọc Silver parquet, chuẩn hóa dtype, validate key, upsert
+idempotent vào schema `silver`, và ghi `silver.load_audit`.
+- dbt project build staging, intermediate, facts, dimensions, marts trong
+schema `gold`.
+- FastAPI backend read-only, chỉ đọc `gold`.
+- React/Vite/TypeScript frontend đọc API, có dashboard và trang chi tiết ticker.
+- Pytest config chạy được từ repo root, không cần set tay `PYTHONPATH`.
 
-Chưa triển khai:
+Chưa nằm trong scope hiện tại:
 
-- Các endpoint backend FastAPI.
-- Bảng điều khiển React.
-- Điều phối DAG bằng Airflow.
-- OCR/bóc tách bảng PDF thành dữ liệu tài chính.
+- Airflow DAG orchestration.
+- OCR/PDF table parsing hoặc extract financial facts từ PDF.
+- Authentication, authorization, write endpoints.
+- Streaming realtime intraday, cloud deployment, RAG/chatbot, ML sentiment nâng cao.
 
-## Bố cục kho mã
+## Snapshot dữ liệu local
+
+Các số liệu dưới đây được đọc từ `data-lake/silver` trong workspace local ngày
+2026-06-01. Thư mục `data-lake/` bị ignore bởi git, nên row count có thể thay
+đổi sau khi rerun pipeline.
+
+
+| Dataset           | Số dòng Silver | Phân vùng mới nhất              | Log chạy |
+| ----------------- | ----------- | ------------------------------- | -------- |
+| `price`           | 62,339      | `trading_date=2026-05-18`       | có       |
+| `index_price`     | 6,234       | `trading_date=2026-05-18`       | có       |
+| `listing`         | 1,535       | `current`                       | có       |
+| `company`         | 50          | `current`                       | có       |
+| `financial_ratio` | 15,282      | `period_type=quarter/year=2026` | có       |
+| `price_board`     | 50          | `trading_date=2026-05-18`       | có       |
+| `news`            | 804         | `date=2026-05-19`               | có       |
+| `bctc_pdf_meta`   | 1,458       | `date=2026-05-14`               | có       |
+
+
+Snapshot Warehouse/Gold đã được tài liệu hóa theo cùng dữ liệu demo:
+
+- `silver.price`: 62,339 rows
+- `silver.index_price`: 6,234 rows
+- `silver.listing`: 1,535 rows
+- `silver.company`: 50 rows
+- `silver.financial_ratio`: 15,282 rows
+- `silver.price_board`: 50 rows
+- `silver.news`: 804 rows
+- `silver.bctc_pdf_meta`: 1,458 rows
+- `gold.mart_stock_daily`: 62,339 rows
+- `gold.mart_company_profile`: 50 rows
+- `gold.mart_market_overview`: 1,247 rows
+- `gold.mart_stock_news_daily`: 154 rows
+- `gold.fact_news_article`: ~subset của `silver.news` (bài có title + ngày đăng; xem `stg_news`)
+- `gold.mart_bctc_documents`: 952 rows
+- `gold.mart_ticker_directory`: union ticker từ price, news, BCTC, company
+
+## Cấu trúc repository
 
 ```text
 stock-pipeline/
-|-- ingestion/                # Mã nạp Bronze và notebook
-|-- data-lake/
-|   |-- raw/                  # Tệp Bronze parquet/PDF
-|   `-- silver/               # Tệp Silver parquet và log _runs.jsonl
-|-- pipeline/silver/          # Bộ biến đổi Bronze -> Silver
+|-- ingestion/                # Mã ingestion Bronze và notebook quản lý
+|   |-- structure_data/        # vnstock OHLCV, listing, company, ratios, board
+|   |-- unstructured_data/     # Ingest tin tức RSS/HTML
+|   `-- semi_structure_data/   # Crawl/download metadata BCTC PDF từ HNX
+|-- pipeline/silver/           # Bộ biến đổi Bronze -> Silver và CLI
 |-- warehouse/
-|   |-- ddl/schema.sql        # Schema PostgreSQL silver/gold
-|   |-- loader/               # Loader Silver parquet -> PostgreSQL
-|   `-- scripts/              # Script thiết lập DB
-|-- transform/dbt/            # Nguồn dự án dbt
-|-- dbt_project.yml           # Trình khởi chạy dbt ở thư mục gốc
-|-- Summary Flow/             # Runbook theo luồng và ghi chú audit
-|-- tests/                    # Bộ kiểm thử pytest
-|-- backend/                  # FastAPI (tương lai)
-|-- frontend/                 # React (tương lai)
-`-- dags/                     # Airflow (tương lai)
+|   |-- ddl/schema.sql         # Schema PostgreSQL silver/gold
+|   |-- loader/                # Loader upsert Silver parquet -> PostgreSQL
+|   `-- scripts/               # Script thiết lập DB
+|-- transform/dbt/             # Mã nguồn dbt project
+|-- backend/                   # FastAPI read-only API
+|-- frontend/                  # Dashboard React/Vite
+|-- tests/                     # Bộ kiểm thử pytest
+|-- scripts/                   # Helper validation
+|-- Docs/                      # Luồng chi tiết: Structure, News, BCTC
+|-- docker-compose.yml         # TimescaleDB/PostgreSQL local
+|-- dbt_project.yml            # Launcher dbt tại repo root
+`-- README.md                  # Tài liệu chuẩn của dự án
 ```
+
+## Tài Liệu Luồng Chi Tiết
+
+| File | Phạm vi |
+|---|---|
+| [Docs/Structure_data_flow.md](Docs/Structure_data_flow.md) | vnstock OHLCV, listing, company, ratios, price board → Gold/API/UI |
+| [Docs/News_data_flow.md](Docs/News_data_flow.md) | RSS/HTML news → `fact_news_article`, sentiment daily |
+| [Docs/BCTC_data_flow.md](Docs/BCTC_data_flow.md) | HNX BCTC PDF crawl → `mart_bctc_documents` |
 
 ## Yêu cầu trước khi chạy
 
-- Môi trường Python với các phụ thuộc của dự án:
+- Môi trường Python 3.12 tương thích.
+- Node.js cho phát triển frontend.
+- Docker Desktop cho PostgreSQL/TimescaleDB local.
+- Tùy chọn `.env` sao chép từ `.env.example`.
+
+Cài đặt phụ thuộc Python:
 
 ```powershell
 pip install -r requirements.txt
+pip install -r backend/requirements.txt
 ```
 
-- Docker Desktop đang chạy.
-- PostgreSQL/TimescaleDB được khởi chạy qua `docker-compose.yml` trên cổng host
-  `55432`.
-- URL cơ sở dữ liệu mặc định:
+Cài đặt phụ thuộc frontend:
+
+```powershell
+cd frontend
+npm install
+cd ..
+```
+
+URL database mặc định:
 
 ```text
 postgresql://stock:stock@localhost:55432/stock_pipeline
 ```
 
-Các giá trị `.env` tùy chọn sẽ được đọc khi phù hợp. Loader mặc định dùng URL DB
-ở trên nếu `DATABASE_URL` chưa được đặt.
+Các biến môi trường quan trọng:
 
-## Thứ tự chạy end-to-end
 
-Nếu data-lake đã có tệp Bronze/Silver, bạn có thể bỏ qua các bước đầu và bắt đầu
-từ lớp cần dùng.
+| Biến                            | Mục đích                                                        |
+| ------------------------------ | --------------------------------------------------------------- |
+| `VNSTOCK_API_KEY`              | API key vnstock (tùy chọn) cho ingestion dữ liệu cấu trúc        |
+| `DATABASE_URL`                 | Kết nối PostgreSQL cho FastAPI và loader                        |
+| `VITE_API_URL`                 | Base URL API cho frontend, mặc định `/api`                      |
+| `HNX_SSL_VERIFY`               | Công tắc dev cho xác thực SSL HNX                               |
+| `HNX_CRAWL_MAX_LIST_PAGES`     | Giới hạn số trang crawl BCTC khi test                           |
+| `BCTC_INGEST_ALL_CRAWLED_PDFS` | Tải mọi PDF đã crawl thay vì chỉ báo cáo tài chính              |
+| `BCTC_ALLOW_EN_DOCS`           | Cho phép BCTC tiếng Anh đi qua filter                           |
+| `NEWS_RATE_LIMIT_RPM`          | Giới hạn tốc độ crawl RSS/HTML (notebook; mặc định thường 60)    |
 
-```text
-1. Nạp Bronze          -> ghi vào data-lake/raw/*
-2. Biến đổi Silver     -> ghi vào data-lake/silver/*
-3. Thiết lập DB        -> tạo schema/bảng PostgreSQL
-4. Nạp Silver vào DB   -> upsert parquet vào schema silver
-5. Build dbt Gold      -> xây dựng schema gold từ schema silver
-6. Kiểm thử/xác minh   -> test pytest/dbt/đếm SQL
-```
 
-## 1. Nạp Bronze
+## Runbook end-to-end
 
-Bronze chỉ dựa trên file. Dữ liệu Bronze không được nạp trực tiếp vào PostgreSQL.
+Nếu `data-lake/` đã có Bronze/Silver files, có thể bắt đầu từ layer cần chạy.
+Bronze không load thẳng vào PostgreSQL; DB chỉ nhận dữ liệu từ Silver parquet.
 
-### Dữ liệu có cấu trúc
+### 1. Ingestion Bronze
 
-Các hàm Python chính:
-
-- `run_structure_ingestion_pipeline`
-- `run_structure_full_ingestion_pipeline`
-- `run_financial_ratio_ingestion_pipeline`
-
-Ví dụ:
+Dữ liệu cấu trúc:
 
 ```powershell
 @'
@@ -126,20 +178,7 @@ print(run_structure_full_ingestion_pipeline(cfg))
 '@ | python -
 ```
 
-Đầu ra Bronze điển hình:
-
-```text
-data-lake/raw/Structure_Data/price/year=<YYYY>/month=<MM>/<TICKER>.parquet
-data-lake/raw/Structure_Data/index/year=<YYYY>/month=<MM>/<INDEX>.parquet
-data-lake/raw/Structure_Data/listing/master/listing.parquet
-data-lake/raw/Structure_Data/company/snapshots/snapshot_date=<date>/*.parquet
-data-lake/raw/Structure_Data/financial_ratio/snapshot_date=<timestamp>/*.parquet
-data-lake/raw/Structure_Data/price_board/snapshot_at=<timestamp>/PRICE_BOARD_SNAPSHOT.parquet
-```
-
-### Tin tức
-
-Quy trình nạp tin tức đọc nguồn RSS/HTML và ghi các phân vùng Bronze theo ngày chạy.
+Tin tức RSS/HTML:
 
 ```powershell
 @'
@@ -150,17 +189,7 @@ print(ingest_news(cfg))
 '@ | python -
 ```
 
-Đầu ra:
-
-```text
-data-lake/raw/Unstructure_Data/news/rss/date=<YYYY-MM-DD>/PART-000.parquet
-data-lake/raw/Unstructure_Data/news/html/date=<YYYY-MM-DD>/PART-000.parquet
-```
-
-### Siêu dữ liệu PDF BCTC
-
-Hiện tại BCTC chỉ crawl/tải các tệp PDF và ghi metadata. Chưa OCR hay bóc tách bảng
-từ nội dung PDF.
+Metadata/tải PDF BCTC:
 
 ```powershell
 @'
@@ -171,26 +200,29 @@ print(run_bctc_annual_pipeline(cfg, include_download=True))
 '@ | python -
 ```
 
-Đầu ra:
+Đầu ra Bronze chính:
 
 ```text
-data-lake/raw/Semi_Structure_Data/bctc_annual_pdf/source=hnx/date=<YYYY-MM-DD>/ticker=<TICKER>/year=<YYYY>/<doc_id>.pdf
+data-lake/raw/Structure_Data/price/year=<YYYY>/month=<MM>/<TICKER>.parquet
+data-lake/raw/Structure_Data/index/year=<YYYY>/month=<MM>/<INDEX>.parquet
+data-lake/raw/Structure_Data/listing/master/listing.parquet
+data-lake/raw/Structure_Data/company/snapshots/snapshot_date=<date>/company_overview.parquet
+data-lake/raw/Structure_Data/financial_ratio/snapshot_date=<timestamp>/<TICKER>.parquet
+data-lake/raw/Structure_Data/price_board/snapshot_at=<timestamp>/PRICE_BOARD_SNAPSHOT.parquet
+data-lake/raw/Unstructure_Data/news/<rss|html>/date=<YYYY-MM-DD>/PART-000.parquet
 data-lake/raw/Semi_Structure_Data/bctc_annual_pdf_meta/source=hnx/date=<YYYY-MM-DD>/PART-000.parquet
+data-lake/raw/Semi_Structure_Data/bctc_annual_pdf/source=hnx/date=<YYYY-MM-DD>/ticker=<TICKER>/year=<YYYY>/<doc_id>.pdf
 ```
 
-## 2. Biến đổi Silver
+### 2. Bronze -> Silver
 
-Silver chuẩn hóa schema/kiểu dữ liệu, khử trùng lặp, đảm bảo mức hạt hiện tại, và
-ghi ra các file `PART-000.parquet` có tính xác định. Chạy lại sẽ ghi đè phân vùng/
-thư mục hiện tại của Silver thay vì append file trùng.
-
-Chạy tất cả bộ dữ liệu Silver có cấu trúc:
+Chạy tất cả dataset Silver **dữ liệu cấu trúc** (`price` … `price_board` — **không** gồm `news` / `bctc_pdf_meta`):
 
 ```powershell
-python -m pipeline.silver.cli --dataset all
+python -m pipeline.silver.cli --dataset all --strict
 ```
 
-Chạy một bộ dữ liệu có cấu trúc:
+Chạy từng dataset:
 
 ```powershell
 python -m pipeline.silver.cli --dataset price --strict
@@ -199,11 +231,6 @@ python -m pipeline.silver.cli --dataset listing --strict
 python -m pipeline.silver.cli --dataset company --strict
 python -m pipeline.silver.cli --dataset financial_ratio --strict
 python -m pipeline.silver.cli --dataset price_board --strict
-```
-
-Chạy tin tức và metadata BCTC cho một phân vùng Bronze đã biết:
-
-```powershell
 python -m pipeline.silver.cli --dataset news --run-partition 2026-05-19 --strict
 python -m pipeline.silver.cli --dataset bctc_pdf_meta --run-partition 2026-05-14 --strict
 ```
@@ -219,15 +246,22 @@ data-lake/silver/financial_ratio/period_type=<quarter|annual>/year=<YYYY>/PART-0
 data-lake/silver/price_board/trading_date=<YYYY-MM-DD>/PART-000.parquet
 data-lake/silver/news/date=<YYYY-MM-DD>/PART-000.parquet
 data-lake/silver/bctc_pdf_meta/date=<YYYY-MM-DD>/PART-000.parquet
-```
-
-Mỗi lần chạy Silver sẽ ghi thêm một dòng audit:
-
-```text
 data-lake/silver/<dataset>/_runs.jsonl
 ```
 
-## 3. Khởi động DB và áp dụng DDL
+Quy tắc đúng của Silver:
+
+- `price` grain: `ticker + trading_date`.
+- `index_price` grain: `index_code + trading_date`.
+- `listing` grain: `symbol`, stock-only universe for MVP.
+- `company` grain: `ticker`, current company snapshot.
+- `financial_ratio` grain: `ticker + item_code + period`, snapshot watermark dùng
+full `snapshot_date` token, không cắt về date-only.
+- `price_board` grain: `symbol + trading_date`, giữ latest `snapshot_at` trong ngày.
+- `news` grain: `article_id`, dedupe RSS/HTML và enrich ticker/sentiment baseline.
+- `bctc_pdf_meta` grain: `doc_id`, metadata/search/view PDF only.
+
+### 3. Khởi động DB và apply DDL
 
 Windows PowerShell:
 
@@ -241,103 +275,54 @@ Linux/macOS/Git Bash:
 bash warehouse/scripts/setup_db.sh
 ```
 
-Script thiết lập:
-
-- Khởi động `stock-pipeline-db` từ `docker-compose.yml`.
-- Chờ PostgreSQL sẵn sàng.
-- Áp dụng `warehouse/ddl/schema.sql`.
-- Tạo schema `silver` và `gold`.
-- Tạo các bảng Silver đang dùng và `silver.load_audit`.
-
-Kết nối bằng:
-
-```text
-Host: localhost
-Port: 55432
-Database: stock_pipeline
-Username: stock
-Password: stock
-```
-
 Mở psql:
 
 ```powershell
 docker exec -it stock-pipeline-db psql -U stock -d stock_pipeline
 ```
 
-Để reset hoàn toàn volume DB:
-
-```powershell
-docker compose down -v
-.\warehouse\scripts\setup_db.ps1
-```
-
-## 4. Nạp Silver vào PostgreSQL
-
-Loader đọc các file parquet Silver, chuẩn bị giá trị tương thích DB, kiểm tra
-khóa, và upsert các dòng vào schema `silver`. Nó không nạp file Bronze.
-
-Đặt DB URL thủ công nếu muốn:
+### 4. Nạp Silver vào PostgreSQL
 
 ```powershell
 $env:DATABASE_URL = "postgresql://stock:stock@localhost:55432/stock_pipeline"
-```
-
-Nạp tất cả bộ dữ liệu Silver được hỗ trợ:
-
-```powershell
 python -m warehouse.loader.cli load-silver --dataset all
 ```
 
-Nạp một bộ dữ liệu:
+Nạp một dataset hoặc một phần:
 
 ```powershell
 python -m warehouse.loader.cli load-silver --dataset price
 python -m warehouse.loader.cli load-silver --dataset news
 python -m warehouse.loader.cli load-silver --dataset bctc_pdf_meta
-```
-
-Nạp một tập con, phân tách bằng dấu phẩy:
-
-```powershell
 python -m warehouse.loader.cli load-silver --dataset price,index_price,news
 ```
 
-Thứ tự loader hiện tại cho `all`:
+Thứ tự loader hiện tại khi `all`:
 
 ```text
 price -> index_price -> listing -> company -> financial_ratio -> price_board -> news -> bctc_pdf_meta
 ```
 
-Các bảng Silver hiện tại và khóa upsert:
+Bảng `silver` đang hoạt động:
 
-| Bộ dữ liệu | Bảng DB | Khóa upsert | Số dòng hiện tại |
-|---|---|---|---:|
-| `price` | `silver.price` | `ticker`, `trading_date` | 62,339 |
-| `index_price` | `silver.index_price` | `index_code`, `trading_date` | 6,234 |
-| `listing` | `silver.listing` | `symbol` | 1,535 |
-| `company` | `silver.company` | `ticker` | 50 |
-| `financial_ratio` | `silver.financial_ratio` | `ticker`, `item_code`, `period` | 15,282 |
-| `price_board` | `silver.price_board` | `symbol`, `trading_date` | 50 |
-| `news` | `silver.news` | `article_id` | 804 |
-| `bctc_pdf_meta` | `silver.bctc_pdf_meta` | `doc_id` | 1,458 |
 
-Audit loader:
+| Dataset           | Table                    | Upsert key                      |
+| ----------------- | ------------------------ | ------------------------------- |
+| `price`           | `silver.price`           | `ticker`, `trading_date`        |
+| `index_price`     | `silver.index_price`     | `index_code`, `trading_date`    |
+| `listing`         | `silver.listing`         | `symbol`                        |
+| `company`         | `silver.company`         | `ticker`                        |
+| `financial_ratio` | `silver.financial_ratio` | `ticker`, `item_code`, `period` |
+| `price_board`     | `silver.price_board`     | `symbol`, `trading_date`        |
+| `news`            | `silver.news`            | `article_id`                    |
+| `bctc_pdf_meta`   | `silver.bctc_pdf_meta`   | `doc_id`                        |
 
-```sql
-SELECT dataset, run_partition, rows_read, rows_inserted, rows_updated, status, loaded_at
-FROM silver.load_audit
-ORDER BY loaded_at DESC
-LIMIT 30;
-```
 
-## 5. dbt Gold
+### 5. dbt Gold
 
-dbt đọc schema PostgreSQL `silver` và xây dựng các mô hình phân tích trong schema
-`gold`. File gốc `dbt_project.yml` là một launcher để có thể chạy lệnh từ thư mục
-gốc repo trong khi mã nguồn dự án nằm dưới `transform/dbt/`.
-
-Từ thư mục gốc repo:
+dbt đọc schema `silver` trong PostgreSQL và build schema `gold`. Root
+`dbt_project.yml` là launcher để chạy từ repo root, còn source project nằm ở
+`transform/dbt/`.
 
 ```powershell
 dbt debug --profiles-dir transform/dbt
@@ -346,160 +331,132 @@ dbt run --profiles-dir transform/dbt
 dbt test --profiles-dir transform/dbt
 ```
 
-Từ bên trong `transform/dbt`:
-
-```powershell
-cd transform/dbt
-dbt run --profiles-dir .
-dbt test --profiles-dir .
-cd ../..
-```
-
-Các tầng mô hình dbt:
+dbt sources:
 
 ```text
-silver sources
-  -> mô hình staging
-  -> mô hình trung gian
-  -> marts/facts/dimensions
+silver.price
+silver.index_price
+silver.listing
+silver.company
+silver.financial_ratio
+silver.price_board
+silver.news
+silver.bctc_pdf_meta
 ```
 
-### Staging
+Các model Gold chính:
 
-Các mô hình staging có cấu trúc được materialize thành view:
 
-- `gold.stg_price`
-- `gold.stg_index_price`
-- `gold.stg_listing`
-- `gold.stg_company`
-- `gold.stg_financial_ratio`
-- `gold.stg_price_board`
+| Layer            | Models                                                                                                                                  |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Staging          | `stg_price`, `stg_index_price`, `stg_listing`, `stg_company`, `stg_financial_ratio`, `stg_price_board`, `stg_news` (ephemeral), `stg_bctc_pdf_meta` (ephemeral) |
+| Intermediate     | `int_price_indicator`, `int_news_sentiment_daily`                                                                                       |
+| Facts/dimensions | `fact_price_daily`, `fact_index_daily`, `fact_news_article`, `dim_security`, `dim_company`                                                |
+| Marts            | `mart_stock_daily`, `mart_company_profile`, `mart_market_overview`, `mart_stock_news_daily`, `mart_bctc_documents`, `mart_ticker_directory` |
 
-Các mô hình staging cho tin tức và BCTC là `ephemeral`, nên chúng được inline vào
-SQL downstream và không tạo quan hệ vật lý `gold.stg_news` hoặc
-`gold.stg_bctc_pdf_meta`:
 
-- `stg_news`: lọc các dòng có `article_id`, `ticker`, và `published_date`.
-- `stg_bctc_pdf_meta`: lọc các tài liệu có thể hiển thị trên web khi `display_status != 'error'`.
+Ghi chú:
 
-### Trung gian
+- `stg_news` và `stg_bctc_pdf_meta` là `ephemeral`; không tạo quan hệ vật lý.
+- `int_price_indicator` tính daily return, MA7/20/50, RSI14, xấp xỉ MACD SMA
+và Bollinger Bands từ `stg_price`.
+- `int_news_sentiment_daily` tổng hợp sentiment keyword-v1 theo
+`ticker + published_date`.
 
-- `gold.int_price_indicator`: các chỉ báo kỹ thuật từ `stg_price`.
-  - Lợi suất ngày
-  - MA7, MA20, MA50
-  - RSI14 theo phương pháp Cutler/SMA
-  - MACD xấp xỉ dựa trên SMA
-  - Dải Bollinger
-- `gold.int_news_sentiment_daily`: tổng hợp cảm xúc tin tức theo ticker/ngày.
+### 6. Backend FastAPI
 
-### Gold Marts
+Backend chỉ đọc schema `gold` và không sửa DB.
 
-| Mô hình | Mức hạt | Vai trò | Số dòng hiện tại |
-|---|---|---|---:|
-| `gold.dim_security` | `symbol` | Dimension chứng khoán niêm yết | 1,535 |
-| `gold.dim_company` | `ticker` | Dimension hồ sơ công ty | 50 |
-| `gold.fact_price_daily` | `ticker`, `trading_date` | Fact giá kèm chỉ báo | 62,339 |
-| `gold.fact_index_daily` | `index_code`, `trading_date` | Fact chỉ số theo ngày | 6,234 |
-| `gold.mart_stock_daily` | `ticker`, `trading_date` | Mart cổ phiếu theo ngày với chỉ báo và cảm xúc tin tức | 62,339 |
-| `gold.mart_company_profile` | `ticker` | Hồ sơ công ty, giá mới nhất, thống kê 52w, khối lượng 20d, PE/PB/EPS/ROE/ROA | 50 |
-| `gold.mart_market_overview` | `trading_date` | Tổng quan thị trường, pivot chỉ số, top tăng/giảm JSON | 1,247 |
-| `gold.mart_stock_news_daily` | `ticker`, `published_date` | Mart cảm xúc tin tức theo ngày | 154 |
-| `gold.mart_bctc_documents` | `doc_id` | Mart tìm kiếm/xem tài liệu BCTC sẵn có | 952 |
+```powershell
+$env:DATABASE_URL = "postgresql://stock:stock@localhost:55432/stock_pipeline"
+uvicorn backend.main:app --reload --port 8000
+```
 
-Số lượng test dbt hiện tại:
+Swagger UI:
 
 ```text
-dbt test --profiles-dir transform/dbt
-PASS=48 WARN=0 ERROR=0
+http://localhost:8000/docs
 ```
 
-## dbt hoạt động trong repo này như thế nào
+Các endpoint có sẵn:
 
-- `transform/dbt/profiles.yml` trỏ dbt tới PostgreSQL trên cổng `55432`.
-- `transform/dbt/models/staging/sources.yml` khai báo schema nguồn
-  `silver`.
-- `{{ source('silver', '<table>') }}` đọc các bảng warehouse được nạp bởi
-  `warehouse.loader.cli`.
-- `{{ ref('<model>') }}` tạo DAG giữa các mô hình dbt.
-- `dbt run` build mô hình theo thứ tự phụ thuộc.
-- `dbt test` chạy schema test từ `models/**/schema.yml` và test generic tùy chỉnh
-  `unique_combination_of_columns`.
-- dbt không upload file parquet. Bước upload/upsert thuộc về warehouse loader.
-  dbt chỉ biến đổi các bảng đã có trong PostgreSQL.
-
-## Xác minh trạng thái hiện tại
-
-Đếm Silver:
-
-```sql
-SELECT 'price' AS table_name, COUNT(*) FROM silver.price
-UNION ALL SELECT 'index_price', COUNT(*) FROM silver.index_price
-UNION ALL SELECT 'listing', COUNT(*) FROM silver.listing
-UNION ALL SELECT 'company', COUNT(*) FROM silver.company
-UNION ALL SELECT 'financial_ratio', COUNT(*) FROM silver.financial_ratio
-UNION ALL SELECT 'price_board', COUNT(*) FROM silver.price_board
-UNION ALL SELECT 'news', COUNT(*) FROM silver.news
-UNION ALL SELECT 'bctc_pdf_meta', COUNT(*) FROM silver.bctc_pdf_meta;
+```text
+GET /health
+GET /tickers
+GET /market/overview
+GET /market/overview?date=2026-05-18
+GET /companies/{symbol}
+GET /prices/{symbol}
+GET /prices/{symbol}?from=2026-01-01&to=2026-05-18&page=1&page_size=100
+GET /indicators/{symbol}
+GET /financials/{symbol}
+GET /financials/{symbol}?period_type=quarter
+GET /news/articles?ticker=&q=&sentiment=&from=&to=&page=
+GET /news/market?page_size=15
+GET /news/{symbol}
+GET /news/{symbol}/articles
+GET /news/{symbol}?from=2026-05-01&to=2026-05-19
+GET /bctc/documents?ticker=&year=&q=&page=
+GET /bctc/recent?page_size=10
+GET /bctc/{symbol}
+GET /bctc/{symbol}?year=2025
+GET /bctc/{symbol}/file/{doc_id}
+GET /docs
 ```
 
-Đếm Gold:
-
-```sql
-SELECT 'fact_price_daily' AS model, COUNT(*) FROM gold.fact_price_daily
-UNION ALL SELECT 'fact_index_daily', COUNT(*) FROM gold.fact_index_daily
-UNION ALL SELECT 'mart_stock_daily', COUNT(*) FROM gold.mart_stock_daily
-UNION ALL SELECT 'mart_company_profile', COUNT(*) FROM gold.mart_company_profile
-UNION ALL SELECT 'mart_market_overview', COUNT(*) FROM gold.mart_market_overview
-UNION ALL SELECT 'mart_stock_news_daily', COUNT(*) FROM gold.mart_stock_news_daily
-UNION ALL SELECT 'mart_bctc_documents', COUNT(*) FROM gold.mart_bctc_documents;
-```
-
-Các chỉ số công ty được lấy từ `silver.financial_ratio`:
-
-```sql
-SELECT
-  COUNT(*) AS total,
-  COUNT(pe_ratio) AS has_pe,
-  COUNT(pb_ratio) AS has_pb,
-  COUNT(eps) AS has_eps,
-  COUNT(roe) AS has_roe,
-  COUNT(roa) AS has_roa
-FROM gold.mart_company_profile;
-```
-
-Tin tức đã được join vào `mart_stock_daily`:
-
-```sql
-SELECT ticker, trading_date, news_count, dominant_sentiment
-FROM gold.mart_stock_daily
-WHERE news_count > 0
-ORDER BY trading_date DESC, ticker
-LIMIT 5;
-```
-
-## Kiểm thử
-
-Chạy test Python:
+Smoke check:
 
 ```powershell
-python -m pytest -q
+curl http://localhost:8000/health
+curl http://localhost:8000/tickers
+curl http://localhost:8000/market/overview
+curl http://localhost:8000/companies/VCB
+curl "http://localhost:8000/prices/VCB?page_size=10"
+curl http://localhost:8000/indicators/VCB
+curl http://localhost:8000/financials/VCB
+curl "http://localhost:8000/news/articles?page_size=20"
+curl http://localhost:8000/news/FPT
+curl "http://localhost:8000/news/FPT/articles?page_size=20"
+curl "http://localhost:8000/news/market?page_size=10"
+curl "http://localhost:8000/bctc/documents?page_size=20"
+curl "http://localhost:8000/bctc/recent?page_size=10"
+curl http://localhost:8000/bctc/AAV
 ```
 
-Chạy test dbt:
+### 7. Frontend React
+
+Frontend là React + Vite + TypeScript, dùng TanStack Query, Axios, Recharts,
+Tailwind, React Router và lucide-react. Frontend chỉ gọi FastAPI, không đọc file
+và không kết nối PostgreSQL trực tiếp.
+
+Chạy dev server:
 
 ```powershell
-dbt test --profiles-dir transform/dbt
+cd frontend
+npm run dev
 ```
 
-## Bảng đã ngừng dùng / phạm vi tương lai
+Mở:
 
-Pipeline hiện tại không nạp các bảng sau:
+```text
+http://localhost:5173
+```
 
-- `silver.price_indicator`: các chỉ báo kỹ thuật hiện được tính trong mô hình dbt
-  `int_price_indicator`, sau đó join vào `fact_price_daily` và
-  `mart_stock_daily`.
-- `silver.bctc_facts`: phạm vi tương lai nếu một bộ OCR/PDF sau này trích xuất dữ liệu
-  từ tài liệu. Phạm vi BCTC hiện tại chỉ là metadata/tìm kiếm/xem PDF.
+Build/typecheck:
 
-Cả hai khối CREATE TABLE đều đã được comment trong `warehouse/ddl/schema.sql` kèm
-ghi chú.
+```powershell
+cd frontend
+npm run build
+npm run typecheck
+```
+
+Các route:
+
+
+| Route            | Mục đích                                                                                       |
+| ---------------- | ---------------------------------------------------------------------------------------------- |
+| `/`              | Market dashboard, index cards, search (`mart_ticker_directory`), top movers, tin thị trường, BCTC gần đây |
+| `/stock/:symbol` | Profile, chart, indicators, financials, **tin từng bài** + sentiment ngày, BCTC PDF          |
+
+
+Base URL API mặc định là `VITE_API_URL` nếu có, nếu không thì `/api`.

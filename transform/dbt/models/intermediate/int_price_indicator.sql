@@ -147,3 +147,4 @@ select
   bb_lower,
   current_timestamp as calculated_at
 from final
+

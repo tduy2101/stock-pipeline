@@ -322,7 +322,7 @@ CREATE TABLE IF NOT EXISTS gold.mart_company_profile (
 -- ============================================================
 -- FUTURE SCOPE / DEPRECATED - Not used in the MVP pipeline
 -- The tables below may exist in an older local DB, but the main
--- pipeline must not load or query them. See MEDALLION_PLAN.md.
+-- pipeline must not load or query them. See README.md.
 -- ============================================================
 
 -- silver.price_indicator:

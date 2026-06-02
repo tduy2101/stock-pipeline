@@ -48,6 +48,13 @@ models:
       - name: trading_date
         tests: [not_null, unique]
 
+  - name: fact_news_article
+    columns:
+      - name: article_id
+        tests: [not_null, unique]
+      - name: title
+        tests: [not_null]
+
   - name: mart_stock_news_daily
     columns:
       - name: ticker
@@ -65,6 +72,11 @@ models:
         tests: [not_null, unique]
       - name: ticker
         tests: [not_null]
+
+  - name: mart_ticker_directory
+    columns:
+      - name: ticker
+        tests: [not_null, unique]
 
   - name: int_news_sentiment_daily
     columns:

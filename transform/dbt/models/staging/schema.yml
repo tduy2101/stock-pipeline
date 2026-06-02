@@ -63,8 +63,6 @@ models:
         tests: [not_null, unique]
       - name: published_date
         tests: [not_null]
-      - name: ticker
-        tests: [not_null]
 
   - name: stg_bctc_pdf_meta
     columns:

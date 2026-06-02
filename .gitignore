@@ -17,6 +17,11 @@ transform/dbt/target/
 transform/dbt/logs/
 transform/dbt/.user.yml
 
+# Frontend local artifacts
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
 # Local environment / secrets (if you add them later)
 .env
 .env.*

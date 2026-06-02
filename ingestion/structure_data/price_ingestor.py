@@ -96,7 +96,7 @@ def _resolve_price_fetch_range(
             gold_tables=("gold.fact_price", "gold.mart_stock_daily"),
         )
     if watermark and has_existing:
-        return next_date_text(watermark), end, "incremental_watermark"
+        return watermark, end, "incremental_watermark"
 
     if has_existing:
         start = (date.today() - timedelta(days=window_days)).isoformat()

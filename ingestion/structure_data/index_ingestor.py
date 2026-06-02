@@ -95,7 +95,7 @@ def _resolve_index_fetch_range(
             silver_dataset="index_price",
         )
     if watermark and has_existing:
-        return next_date_text(watermark), end, "incremental_watermark"
+        return watermark, end, "incremental_watermark"
 
     if has_existing:
         start = (date.today() - timedelta(days=window_days)).isoformat()
