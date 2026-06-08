@@ -8,9 +8,12 @@ import re
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import TYPE_CHECKING, Callable, TypeVar
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    from .config import IngestionConfig
 
 LOGGER = logging.getLogger(__name__)
 _last_request_time = 0.0
@@ -24,6 +27,211 @@ def configure_logging() -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+
+
+def listing_bronze_path(cfg: "IngestionConfig") -> Path:
+    """Path to the Bronze listing master parquet snapshot."""
+    return cfg.data_lake_root / "listing" / "master" / "listing.parquet"
+
+
+def _resolve_listing_security_type_column(df: pd.DataFrame) -> str | None:
+    for col in ("security_type", "type", "type_of_stock"):
+        if col in df.columns:
+            return col
+    return None
+
+
+def _normalize_filter_values(values: list[str]) -> set[str]:
+    return {str(v).strip().upper() for v in values if str(v).strip()}
+
+
+def load_tickers_from_listing_bronze(
+    cfg: "IngestionConfig",
+    *,
+    exchange_filter: list[str] | None = None,
+    security_type_filter: list[str] | None = None,
+) -> list[str]:
+    """
+    Read the latest Bronze listing parquet and return filtered ticker symbols.
+
+    Path: ``<cfg.data_lake_root>/listing/master/listing.parquet``.
+
+  Filters (case-insensitive):
+    - ``exchange_filter`` or ``cfg.listing_exchange_filter`` on ``exchange``
+    - ``security_type_filter`` or ``cfg.listing_security_type_filter`` on
+      ``security_type``, ``type``, or ``type_of_stock`` (first column found)
+
+    Returns:
+        Sorted, upper-case, de-duplicated symbol list.
+
+    Raises:
+        FileNotFoundError: Bronze listing file is missing.
+        ValueError: No symbols remain after filters.
+    """
+    path = listing_bronze_path(cfg)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Bronze listing not found at {path}. Run listing ingestion first."
+        )
+
+    df = pd.read_parquet(path)
+    rows_before = len(df)
+    exchange_values = (
+        exchange_filter
+        if exchange_filter is not None
+        else cfg.listing_exchange_filter
+    )
+    security_values = (
+        security_type_filter
+        if security_type_filter is not None
+        else cfg.listing_security_type_filter
+    )
+    exchange_norm = _normalize_filter_values(exchange_values)
+    security_norm = _normalize_filter_values(security_values)
+
+    filtered = df.copy()
+    applied_filters: list[str] = []
+
+    if exchange_norm:
+        if "exchange" not in filtered.columns:
+            raise ValueError("Bronze listing is missing required column: exchange")
+        exchange_col = (
+            filtered["exchange"].astype("string").str.strip().str.upper()
+        )
+        filtered = filtered.loc[exchange_col.isin(exchange_norm)].copy()
+        applied_filters.append(f"exchange={sorted(exchange_norm)}")
+
+    if security_norm:
+        security_col_name = _resolve_listing_security_type_column(filtered)
+        if security_col_name is None:
+            raise ValueError(
+                "Bronze listing is missing security type column "
+                "(expected security_type, type, or type_of_stock)"
+            )
+        security_col = (
+            filtered[security_col_name]
+            .astype("string")
+            .str.strip()
+            .str.lower()
+        )
+        filtered = filtered.loc[security_col.isin({v.lower() for v in security_norm})].copy()
+        applied_filters.append(f"security_type={sorted(security_norm)}")
+
+    if "symbol" not in filtered.columns:
+        raise ValueError("Bronze listing is missing required column: symbol")
+
+    symbols = (
+        filtered["symbol"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+        .dropna()
+    )
+    symbols = symbols.loc[symbols.ne("")]
+    seen: set[str] = set()
+    tickers: list[str] = []
+    for symbol in symbols.tolist():
+        if symbol not in seen:
+            seen.add(symbol)
+            tickers.append(symbol)
+    tickers = sorted(tickers)
+
+    LOGGER.info(
+        "Loaded listing tickers from %s: rows_before=%s rows_after=%s filters=%s",
+        path,
+        rows_before,
+        len(filtered),
+        applied_filters or ["none"],
+    )
+
+    if not tickers:
+        raise ValueError(
+            "No tickers remaining after filter "
+            f"exchange={exchange_values!r} security_type={security_values!r}. "
+            "Check filter config."
+        )
+    return tickers
+
+
+def load_tickers_from_listing_bronze_in_file_order(
+    cfg: "IngestionConfig",
+    *,
+    exchange_filter: list[str] | None = None,
+    security_type_filter: list[str] | None = None,
+) -> list[str]:
+    """
+    Like ``load_tickers_from_listing_bronze`` but preserves symbol order in the
+    Bronze parquet (first occurrence), without sorting.
+    """
+    path = listing_bronze_path(cfg)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Bronze listing not found at {path}. Run listing ingestion first."
+        )
+
+    df = pd.read_parquet(path)
+    exchange_values = (
+        exchange_filter
+        if exchange_filter is not None
+        else cfg.listing_exchange_filter
+    )
+    security_values = (
+        security_type_filter
+        if security_type_filter is not None
+        else cfg.listing_security_type_filter
+    )
+    exchange_norm = _normalize_filter_values(exchange_values)
+    security_norm = _normalize_filter_values(security_values)
+
+    filtered = df.copy()
+    if exchange_norm:
+        if "exchange" not in filtered.columns:
+            raise ValueError("Bronze listing is missing required column: exchange")
+        exchange_col = (
+            filtered["exchange"].astype("string").str.strip().str.upper()
+        )
+        filtered = filtered.loc[exchange_col.isin(exchange_norm)].copy()
+
+    if security_norm:
+        security_col_name = _resolve_listing_security_type_column(filtered)
+        if security_col_name is None:
+            raise ValueError(
+                "Bronze listing is missing security type column "
+                "(expected security_type, type, or type_of_stock)"
+            )
+        security_col = (
+            filtered[security_col_name]
+            .astype("string")
+            .str.strip()
+            .str.lower()
+        )
+        filtered = filtered.loc[security_col.isin({v.lower() for v in security_norm})].copy()
+
+    if "symbol" not in filtered.columns:
+        raise ValueError("Bronze listing is missing required column: symbol")
+
+    symbols = (
+        filtered["symbol"]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+        .dropna()
+    )
+    symbols = symbols.loc[symbols.ne("")]
+    seen: set[str] = set()
+    tickers: list[str] = []
+    for symbol in symbols.tolist():
+        if symbol not in seen:
+            seen.add(symbol)
+            tickers.append(symbol)
+
+    if not tickers:
+        raise ValueError(
+            "No tickers remaining after filter "
+            f"exchange={exchange_values!r} security_type={security_values!r}. "
+            "Check filter config."
+        )
+    return tickers
 
 
 def wait_for_rate_limit(rate_limit_rpm: int) -> None:
@@ -90,7 +298,7 @@ def load_dotenv_from_project_root() -> bool:
     if not env_path.is_file():
         LOGGER.debug("No .env found at %s", env_path)
         return False
-    load_dotenv(env_path)
+    load_dotenv(env_path, override=True)
     LOGGER.info("Loaded environment variables from %s", env_path)
     return True
 
@@ -429,6 +637,36 @@ def max_trading_date_from_partition_dir(
     ]
     valid = [v for v in values if v]
     return max(valid) if valid else None
+
+
+def max_trading_date_in_bronze_ticker_files(
+    cfg: "IngestionConfig",
+    category: str,
+    symbol: str,
+    *,
+    tail_files: int = 2,
+) -> str | None:
+    """Latest trading date in bronze monthly parquet files for one ticker."""
+    category_dir = cfg.data_lake_root / category
+    if not category_dir.is_dir():
+        return None
+    sym = str(symbol).strip().upper()
+    if not sym:
+        return None
+    paths = sorted(category_dir.glob(f"year=*/month=*/{sym}.parquet"))
+    if not paths:
+        return None
+    candidates: list[str] = []
+    for path in paths[-max(1, int(tail_files)) :]:
+        try:
+            df = pd.read_parquet(path)
+        except Exception as ex:
+            LOGGER.debug("Cannot read bronze ticker file %s: %s", path, ex)
+            continue
+        parsed = max_trading_date_in_frame(df)
+        if parsed:
+            candidates.append(parsed)
+    return max(candidates) if candidates else None
 
 
 def _gold_database_url() -> str:

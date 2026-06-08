@@ -3,8 +3,8 @@ stock_pipeline:
   outputs:
     dev:
       type: postgres
-      host: localhost
-      port: 55432
+      host: "{{ env_var('PG_HOST', 'localhost') }}"
+      port: "{{ env_var('PG_PORT', '55432') | as_number }}"
       user: stock
       password: stock
       dbname: stock_pipeline

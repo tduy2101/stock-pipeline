@@ -84,6 +84,56 @@ SILVER_COLUMNS = [
 ]
 DEDUP_KEY = ["symbol", "trading_date"]
 
+# vnstock VCI/KBS price_board: listing_* + match_* + bid_ask_* (Bronze raw column names).
+_BRONZE_FIELD_SOURCES: dict[str, list[str]] = {
+    "symbol": ["symbol", "listing_symbol", "ticker"],
+    "exchange": ["exchange", "listing_exchange"],
+    "reference_price": ["reference_price", "match_reference_price", "listing_ref_price"],
+    "ceiling_price": ["ceiling_price", "match_ceiling_price", "listing_ceiling"],
+    "floor_price": ["floor_price", "match_floor_price", "listing_floor"],
+    "open_price": ["open_price", "match_open_price"],
+    "high_price": ["high_price", "match_highest"],
+    "low_price": ["low_price", "match_lowest"],
+    "close_price": ["close_price", "match_match_price"],
+    "average_price": ["average_price", "match_avg_match_price"],
+    "volume_accumulated": ["volume_accumulated", "match_accumulated_volume"],
+    "total_value": ["total_value", "match_accumulated_value"],
+    "price_change": ["price_change"],
+    "percent_change": ["percent_change"],
+    "bid_price_1": ["bid_price_1", "bid_ask_bid_1_price"],
+    "bid_price_2": ["bid_price_2", "bid_ask_bid_2_price"],
+    "bid_price_3": ["bid_price_3", "bid_ask_bid_3_price"],
+    "bid_vol_1": ["bid_vol_1", "bid_ask_bid_1_volume"],
+    "bid_vol_2": ["bid_vol_2", "bid_ask_bid_2_volume"],
+    "bid_vol_3": ["bid_vol_3", "bid_ask_bid_3_volume"],
+    "ask_price_1": ["ask_price_1", "bid_ask_ask_1_price"],
+    "ask_price_2": ["ask_price_2", "bid_ask_ask_2_price"],
+    "ask_price_3": ["ask_price_3", "bid_ask_ask_3_price"],
+    "ask_vol_1": ["ask_vol_1", "bid_ask_ask_1_volume"],
+    "ask_vol_2": ["ask_vol_2", "bid_ask_ask_2_volume"],
+    "ask_vol_3": ["ask_vol_3", "bid_ask_ask_3_volume"],
+    "foreign_buy_volume": ["foreign_buy_volume", "match_foreign_buy_volume"],
+    "foreign_sell_volume": ["foreign_sell_volume", "match_foreign_sell_volume"],
+    "foreign_room": ["foreign_room", "match_current_room", "match_total_room"],
+}
+
+
+def _pick_bronze_series(df: pd.DataFrame, sources: list[str]) -> pd.Series:
+    for name in sources:
+        if name in df.columns:
+            return df[name]
+    return pd.Series(pd.NA, index=df.index)
+
+
+def _normalize_bronze_price_board(df: pd.DataFrame) -> pd.DataFrame:
+    """Map vnstock price_board column names to Silver ingest field names."""
+    out = df.copy()
+    for target, sources in _BRONZE_FIELD_SOURCES.items():
+        out[target] = _pick_bronze_series(out, sources)
+    if "data_source" not in out.columns and "source" in out.columns:
+        out["data_source"] = out["source"]
+    return out
+
 
 def _extract_snapshot_partition(path: Path) -> str | None:
     prefix = "snapshot_at="
@@ -123,6 +173,11 @@ def dedupe_to_daily_latest(df: pd.DataFrame) -> pd.DataFrame:
     for column in DEDUP_KEY:
         if column not in out.columns:
             out[column] = pd.NA
+    if "symbol" in out.columns:
+        symbol_text = out["symbol"].astype("string").str.strip()
+        out = out.loc[out["symbol"].notna() & symbol_text.ne("")].copy()
+    if "trading_date" in out.columns:
+        out = out.loc[out["trading_date"].notna()].copy()
     if "snapshot_at" not in out.columns:
         out["snapshot_at"] = pd.NaT
     if out.empty:
@@ -343,7 +398,7 @@ class PriceBoardTransformer:
         return parsed
 
     def _coerce(self, df: pd.DataFrame) -> pd.DataFrame:
-        out = df.copy()
+        out = _normalize_bronze_price_board(df.copy())
         for column in [
             "symbol",
             "exchange",
@@ -361,6 +416,14 @@ class PriceBoardTransformer:
         result["symbol"] = (
             out["symbol"].map(_compact_text).astype("string").str.upper()
         )
+        missing_symbol = result["symbol"].isna()
+        if missing_symbol.any():
+            LOGGER.warning(
+                "Dropping %s price_board rows without symbol after Bronze normalize",
+                int(missing_symbol.sum()),
+            )
+            result = result.loc[~missing_symbol].copy()
+            out = out.loc[~missing_symbol].copy()
         exchange = out["exchange"].map(_compact_text).astype("string").str.upper()
         result["exchange"] = exchange.fillna("UNKNOWN")
 

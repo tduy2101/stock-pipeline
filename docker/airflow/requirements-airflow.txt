@@ -1,0 +1,18 @@
+# Extra deps for the Airflow worker image, installed WITH the official
+# Airflow 3.2.2 / py3.12 constraint file so shared transitive deps (pandas, numpy,
+# pyarrow, requests, urllib3, PyYAML, SQLAlchemy, certifi, tenacity, beautifulsoup4,
+# python-dateutil, pytz) resolve to the exact versions the base image already ships.
+#
+# Only list packages the pipeline ADDS on top of the base image. Leave packages that
+# the constraint manages UNVERSIONED to avoid micro-version conflicts.
+# dbt-core/dbt-postgres are installed separately in Dockerfile.airflow.
+feedparser==6.0.11
+openpyxl==3.1.5
+pdfminer.six==20251230
+pdfplumber==0.11.9
+python-dotenv
+psycopg2-binary
+# NOTE: vnstock is installed in a separate Dockerfile pass (not here) because it
+# requires vnstock_ezchart>=1.0.1 which caps numpy<2.3, incompatible with the
+# constraint-pinned numpy 2.4.6. Installing it without the constraint downgrades
+# only the vnstock subtree (numpy/pandas) without touching Airflow's own deps.

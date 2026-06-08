@@ -77,6 +77,29 @@ def test_coerce_volume_to_int64(tmp_path):
     assert pd.isna(coerced.loc[1, "volume_accumulated"])
 
 
+def test_coerce_listing_symbol_bronze_schema(tmp_path):
+    transformer = _transformer(tmp_path)
+    df = pd.DataFrame(
+        {
+            "listing_symbol": ["acb", "HPG"],
+            "listing_exchange": ["HOSE", None],
+            "match_match_price": [26100, 42350],
+            "match_accumulated_volume": [3033000, 879800],
+            "match_reference_price": [26000, 41900],
+            "data_source": ["vci", "vci"],
+            "snapshot_at": [datetime(2026, 6, 4, 2, 37, 18)] * 2,
+        }
+    )
+
+    coerced = transformer._coerce(df)
+
+    assert len(coerced) == 2
+    assert coerced.loc[0, "symbol"] == "ACB"
+    assert coerced.loc[1, "symbol"] == "HPG"
+    assert coerced.loc[0, "close_price"] == 26100.0
+    assert coerced.loc[0, "volume_accumulated"] == 3033000
+
+
 def test_exchange_fillna(tmp_path):
     transformer = _transformer(tmp_path)
     df = pd.DataFrame(

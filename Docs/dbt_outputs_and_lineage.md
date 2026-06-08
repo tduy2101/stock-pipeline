@@ -1,12 +1,24 @@
 # DBT Outputs & Lineage (Silver → Gold)
 
-> Cập nhật: 2026-06-02
+> Cập nhật: 2026-06-06
 
 Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **Silver (PostgreSQL)** → **Gold (dbt)**, kèm **lineage** đến các endpoint API/UI.
 
 **Lưu ý quan trọng:**
 - Đầu ra **Gold** được xác định theo **SQL models trong `transform/dbt/models/**`**.
 - File `warehouse/ddl/schema.sql` có một số bảng legacy (không phản ánh chính xác Gold hiện tại). Hãy ưu tiên dbt models.
+- Runbook Bronze/Silver/load/dbt và **notebook vs mặc định DAG**: [README.md](../README.md), [Structure_data_flow.md](Structure_data_flow.md), [News_data_flow.md](News_data_flow.md), [BCTC_data_flow.md](BCTC_data_flow.md).
+- **Airflow orchestration:** [docker/airflow/README_airflow.md](../docker/airflow/README_airflow.md).
+
+## Airflow DAG → dbt subset
+
+| DAG | Schedule (ICT) | Silver load | dbt `--select` |
+|---|---|---|---|
+| `structured_daily` | T2–T6 16:30 | `price,index_price,price_board` | `+mart_stock_daily +mart_price_board +mart_market_overview` |
+| `structured_monthly` | Ngày 1 hàng tháng 17:00 | `listing,company,financial_ratio` | `+mart_financial_summary +mart_company_profile` |
+| `news_daily` | Daily 06:00 | `news` | `+mart_stock_news_signal +fact_news_article` |
+| `bctc_weekly` | T7 10:00 | `bctc_pdf_meta` | `+mart_bctc_documents` |
+| `gold_full_refresh` | Daily 19:00 | — | full project (`dbt run` + `dbt test`) |
 
 ---
 
@@ -328,7 +340,11 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 
 ---
 
-# 7) Update 2026-06-02: Current Gold/API/UI Lineage
+# 7) Update 2026-06-03: Current Gold/API/UI Lineage
+
+**Silver snapshot tham chiếu (parquet, workspace):** `news/date=2026-06-03` → 924 rows;
+`bctc_pdf_meta/date=2026-06-03` → 1,867 rows; `price_board/trading_date=2026-06-03` → 703 rows;
+`company/current` → 703 rows. Gold row counts trong PostgreSQL cập nhật sau `load-silver` + `dbt run`.
 
 If older sections above mention direct `stg_financial_ratio` API reads,
 close-only stock charts, no price-board API, or news joined only by
@@ -384,3 +400,11 @@ UI note: stock profile pages no longer display `charter_capital` because the
 current dataset does not provide reliable display data for that field. The stock
 price chart renders `open`, `high`, `low`, and `close`, with `volume` in the
 hover tooltip.
+
+## 7.5 New marts -> API mapping (verified)
+
+| Gold mart | Endpoint(s) | Notes |
+|---|---|---|
+| `gold.mart_stock_news_signal` | `GET /news/{symbol}`, `GET /news/{symbol}/signal` | Main stock-news signal source; grouped by `ticker + trading_date`, includes `top_articles`. |
+| `gold.mart_price_board` | `GET /board/{symbol}`, `GET /board/{symbol}/foreign-flow` | Board and foreign flow come from the same mart filtered by `trading_date`. |
+| `gold.mart_financial_summary` | `GET /financials/{symbol}` | Wide-format financials; supports `period_type=quarter|annual`; annual rows are derived from latest quarter each year when raw annual rows are missing. |

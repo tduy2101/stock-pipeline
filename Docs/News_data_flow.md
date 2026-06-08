@@ -1,6 +1,6 @@
 # Luồng dữ liệu tin tức (News)
 
-Cập nhật: 2026-06-01
+Cập nhật: 2026-06-03
 
 Tài liệu mô tả luồng **tin tức phi cấu trúc** từ crawl đến PostgreSQL:
 
@@ -151,6 +151,55 @@ print(ingest_news(cfg))
 ```
 
 README gợi ý `days_back=30` cho lần backfill; production hàng ngày thường `days_back=1` (mặc định class).
+
+### 4.3. Notebook vs DAG Airflow
+
+| | Notebook `ingest_news.ipynb` | DAG `news_daily` / `NewsIngestionConfig()` |
+|---|---|---|
+| Schedule | Thủ công | Daily **06:00 ICT** |
+| File DAG | — | `docker/airflow/dags/news_daily.py` |
+| `days_back` | `30` | `1` |
+| Partition Bronze | `date=<run_date>` (ngày chạy job) | Cùng — một partition mỗi lần ingest |
+| Silver | `--run-partition <run_date>` khớp Bronze | XCom từ `bronze_news` (ngày ingest thực tế) |
+| dbt subset | — | `+mart_stock_news_signal +fact_news_article` |
+| Listing cho match ticker | `use_listing_tickers=True` (nên chạy sau `ingest_listing`) | Mặc định class `False` |
+
+Runbook: [docker/airflow/README_airflow.md](../docker/airflow/README_airflow.md)
+
+Backfill 30 ngày **không** tạo 30 partition Bronze; mọi bài trong cửa sổ nằm chung partition ngày chạy. Muốn Silver theo từng ngày đăng cần nhiều lần ingest hoặc logic riêng (chưa có).
+
+### 4.4. Tóm tắt backfill -> DAG cho news
+
+| Bước | Backfill notebook | DAG `news_daily` |
+|---|---|---|
+| Phạm vi crawl | `days_back=30`, bật cả RSS + HTML | `days_back=1`, bật cả RSS + HTML |
+| Universe ticker match | Thường bật `use_listing_tickers=True` để match theo listing | Mặc định class `False`, tức vẫn crawl tin nhưng không buộc phải sync listing trước |
+| Bronze partition | `data-lake/raw/Unstructure_Data/news/<rss|html>/date=<run_date>/PART-000.parquet` | Cùng layout, mỗi ngày một `run_partition` mới |
+| Silver | `data-lake/silver/news/date=<run_date>/PART-000.parquet` | Cùng layout; task silver đọc `run_partition` do bronze trả về qua XCom |
+| Warehouse / Gold | `silver.news` -> `gold.fact_news_article` + `gold.mart_stock_news_signal` | Cùng luồng; sau load + dbt thì API/UI đọc dữ liệu mới |
+
+Điểm quan trọng:
+
+- Partition Bronze/Silver của `news` là **ngày chạy job**, không phải `published_at`.
+- “Incremental” của DAG news là thu hẹp cửa sổ crawl còn `1` ngày; lịch sử nhiều ngày được tích lũy ở Silver/PostgreSQL qua nhiều `run_partition`.
+- Khi rerun cùng ngày, notebook thường dùng `truncate_partition=True`, nên partition Bronze ngày đó được ghi lại từ đầu.
+
+### 4.5. HTML sources (`sources.yaml`, 2026-06)
+
+| Nguồn | `enabled` | Ghi chú |
+|---|---|---|
+| VnExpress (kinh doanh, chứng khoán) | yes | CSS + `detail_mode: hybrid` |
+| CafeF thị trường CK | yes | RSS là fallback chính nếu HTML JS-only |
+| **VnEconomy** (thị trường, kinh tế số, tài chính) | yes | `link_css` theo layout Hemera CMS; hybrid + OpenGraph |
+| Vietstock HTML | no | Ưu tiên RSS (hay bị chặn) |
+
+**Hybrid HTML:** YAML CSS trước → thiếu field thì `article_heuristics` (JSON-LD, Open Graph, DOM). Gợi ý selector:
+
+```powershell
+python -m ingestion.unstructured_data.html_discovery --url "https://vneconomy.vn/thi-truong.htm"
+```
+
+Module: `ingestion/unstructured_data/article_heuristics.py`, `html_discovery.py`, `html_list_adapter.py`.
 
 ---
 
@@ -600,7 +649,7 @@ group by ticker, published_date
 
 - **Materialization:** `table` → `gold.int_news_sentiment_daily`.
 - **Grain:** **`ticker + published_date`** (unique test trong `marts/schema.yml`).
-- Snapshot demo: input ~804 bài Silver → ~**154** cặp (ticker, ngày) sau filter + group.
+- Ví dụ demo cũ: ~804 bài Silver → ~**154** cặp (ticker, ngày); workspace 2026-06-03: **924** bài Silver.
 
 ### 10.5. Mart — `mart_stock_news_daily` (table)
 
@@ -633,7 +682,9 @@ left join {{ ref('int_news_sentiment_daily') }} ns
 | API hiện tại | `GET /prices/{symbol}` và `GET /indicators/{symbol}` **không** SELECT các cột news — chỉ OHLCV/indicator |
 | DDL legacy | `warehouse/ddl/schema.sql` có `sentiment_score` / `sentiment_label` trên `mart_stock_daily`; model dbt hiện tại thêm `news_count`, `avg_sentiment_score`, `dominant_sentiment` — có thể lệch schema DB cũ nếu chưa `dbt run` sau đổi model |
 
-### 10.7. DAG phụ thuộc (news)
+### 10.7. DAG phụ thuộc (dbt lineage + Airflow)
+
+**Orchestration:** DAG `news_daily` — `bronze_news` → `silver_news` → `load_silver` → `dbt_marts` (selector ở §4.3).
 
 ```mermaid
 flowchart TB
@@ -664,12 +715,14 @@ Tin từng bài: **`gold.fact_news_article`**; ad-hoc sâu hơn: `silver.news` (
 | **`mart_stock_news_daily`** | table | `ticker + published_date` | Sentiment theo ngày |
 | `mart_stock_daily` (cột news) | table | `ticker + trading_date` | Tin gắn ngày giao dịch |
 
-**Snapshot demo (README, 2026-06-01):**
+**Snapshot workspace (2026-06-03):**
 
-| Layer | Rows |
-|---|---:|
-| `silver.news` | 804 |
-| `gold.mart_stock_news_daily` | 154 |
+| Layer | Rows | Ghi chú |
+|---|---:|---|
+| Bronze RSS `date=2026-06-03` | ~934 | |
+| Bronze HTML `date=2026-06-03` | ~111 | VnEconomy + VnExpress + CafeF |
+| Silver `news/date=2026-06-03` | 924 | Dedupe RSS+HTML |
+| `gold.*` (sau `dbt run`) | (theo PG) | Ví dụ demo cũ: `mart_stock_news_daily` ~154 cặp |
 
 ---
 
@@ -876,7 +929,7 @@ Thứ tự: **Bronze → Silver files → load `silver.news` → `dbt run` → A
 
 ---
 
-## 16. Current News UI/API Behavior (2026-06-02)
+## 16. Current News UI/API Behavior (2026-06-03)
 
 This section supersedes older notes that describe stock news only as
 `ticker + published_date` aggregates or say stock detail reads only
@@ -915,6 +968,46 @@ alone.
 The current sentiment method is keyword-based (`keyword_v1`), not an ML model.
 Positive/negative/neutral labels come from keyword score thresholds in the news
 Silver/dbt flow.
+
+### 16.5 Exact formula (current SQL)
+
+In `mart_stock_news_signal`, each article contributes an `article_weight`:
+
+`article_weight = relevance_weight * source_weight * time_decay`
+
+- `relevance_weight`:
+  - `title` = `3.0`
+  - `summary` = `2.0`
+  - `body` = `1.0`
+- `source_weight`:
+  - `source_tier = 1` -> `1.5`
+  - `source_tier = 2` -> `1.2`
+  - otherwise -> `1.0`
+- `time_decay`:
+  - `exp(-age_seconds / (48 * 3600))`
+  - where `age_seconds = extract(epoch from (current_timestamp - published_at))`
+
+Grouped by `ticker + trading_date`:
+
+- `avg_sentiment_score = round(avg(sentiment_score), 4)`
+- `weighted_sentiment = round(sum(sentiment_score * article_weight) / nullif(sum(article_weight), 0), 4)`
+
+Signal thresholds:
+
+- `weighted_sentiment >= 0.3` -> `buy_signal`
+- `weighted_sentiment <= -0.3` -> `sell_signal`
+- otherwise -> `neutral`
+
+`dominant_sentiment` is count-based (not weighted):
+
+- `positive` if `positive_count > negative_count`
+- `negative` if `negative_count > positive_count`
+- otherwise `neutral`
+
+### 16.6 News archive vs stock news panel
+
+- Main news archive (`/news`, API `/news/articles`) reads `gold.fact_news_article` and can show preview/full text from `body_text` when available.
+- Stock-detail news panel (`/stock/:symbol`, API `/news/{symbol}` and `/news/{symbol}/signal`) reads `gold.mart_stock_news_signal`, which is trading-session aggregate data plus compact `top_articles` metadata (title/url/sentiment/relevance/weight), not full article body text.
 
 ### 16.4. Article content in UI
 

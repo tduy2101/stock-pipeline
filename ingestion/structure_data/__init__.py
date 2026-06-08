@@ -4,7 +4,7 @@ from .common import (
     project_root,
     register_vnstock_api_key_from_env,
 )
-from .config import IngestionConfig
+from .config import DEFAULT_PRICE_BOARD_TICKERS, IngestionConfig
 from .index_ingestor import ingest_indices
 from .pipeline import (
     run_financial_ratio_ingestion_pipeline,
@@ -22,6 +22,7 @@ from .stock_info_ingestor import (
 
 __all__ = [
     "IngestionConfig",
+    "DEFAULT_PRICE_BOARD_TICKERS",
     "configure_logging",
     "project_root",
     "load_dotenv_from_project_root",

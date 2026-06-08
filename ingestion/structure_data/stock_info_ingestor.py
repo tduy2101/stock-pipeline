@@ -228,6 +228,13 @@ def ingest_company_overview(cfg: IngestionConfig | None = None) -> str:
         / f"snapshot_date={cfg.run_date}"
         / "company_overview.parquet"
     )
+    if out_file.is_file():
+        LOGGER.info(
+            "Company snapshot for %s already exists (%s); skip fetch.",
+            cfg.run_date,
+            out_file,
+        )
+        return str(out_file)
 
     symbols_to_fetch = [str(t).strip() for t in cfg.tickers[: cfg.max_tickers_per_run] if str(t).strip()]
     if not symbols_to_fetch:
@@ -454,11 +461,13 @@ def ingest_financial_ratio(cfg: IngestionConfig | None = None) -> dict[str, str]
     return outputs
 
 
-def ingest_price_board(cfg: IngestionConfig | None = None) -> str:
-    cfg = cfg or IngestionConfig()
-    tickers = [t.upper().strip() for t in cfg.tickers[: cfg.max_tickers_per_run]]
-    if not tickers:
-        return ""
+def fetch_price_board_frame(
+    cfg: IngestionConfig, tickers: list[str]
+) -> tuple[pd.DataFrame, str]:
+    """Fetch price board for ``tickers`` (one API call). Returns (frame, source)."""
+    symbols = [t.upper().strip() for t in tickers if str(t).strip()]
+    if not symbols:
+        return pd.DataFrame(), ""
     raw = None
     src_used = ""
     for src in cfg.resolved_data_sources():
@@ -466,8 +475,8 @@ def ingest_price_board(cfg: IngestionConfig | None = None) -> str:
 
             def _board() -> object:
                 wait_for_rate_limit(cfg.rate_limit_rpm)
-                trading = Trading(source=src, symbol=tickers[0])
-                return trading.price_board(symbols_list=tickers)
+                trading = Trading(source=src, symbol=symbols[0])
+                return trading.price_board(symbols_list=symbols)
 
             raw = call_with_retry(
                 _board,
@@ -481,16 +490,26 @@ def ingest_price_board(cfg: IngestionConfig | None = None) -> str:
         except Exception as ex:
             LOGGER.warning("price_board (%s): %s", src, ex)
     if raw is None or (hasattr(raw, "empty") and raw.empty):
-        LOGGER.warning("price_board_snapshot is empty from all sources; skip save.")
-        return ""
+        return pd.DataFrame(), ""
     if not isinstance(raw, pd.DataFrame):
         raw = pd.DataFrame(raw)
-    df = _flatten_multiindex_columns(raw)
-    snapshot_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
-    df["snapshot_at"] = snapshot_at
-    df["data_source"] = src_used
+    return _flatten_multiindex_columns(raw), src_used
+
+
+def save_price_board_frame(
+    cfg: IngestionConfig,
+    df: pd.DataFrame,
+    *,
+    snapshot_at: str,
+    data_source: str,
+) -> str:
+    if df.empty:
+        return ""
+    out = df.copy()
+    out["snapshot_at"] = snapshot_at
+    out["data_source"] = data_source
     out_file = save_partition_parquet(
-        df,
+        out,
         cfg.data_lake_root,
         "price_board",
         cfg.run_date,
@@ -499,6 +518,24 @@ def ingest_price_board(cfg: IngestionConfig | None = None) -> str:
         partition_value=snapshot_at,
     )
     return str(out_file)
+
+
+def ingest_price_board(
+    cfg: IngestionConfig | None = None,
+    *,
+    snapshot_at: str | None = None,
+) -> str:
+    """Persist one price-board snapshot for ``cfg.tickers`` (caller should cap symbols)."""
+    cfg = cfg or IngestionConfig()
+    tickers = [t.upper().strip() for t in cfg.tickers[: cfg.max_tickers_per_run] if str(t).strip()]
+    if not tickers:
+        return ""
+    frame, src_used = fetch_price_board_frame(cfg, tickers)
+    if frame.empty:
+        LOGGER.warning("price_board_snapshot is empty from all sources; skip save.")
+        return ""
+    ts = snapshot_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
+    return save_price_board_frame(cfg, frame, snapshot_at=ts, data_source=src_used)
 
 
 def ingest_all_stock_info(cfg: IngestionConfig | None = None) -> dict[str, object]:

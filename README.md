@@ -1,6 +1,6 @@
 # Stock Pipeline - Medallion Data Pipeline cho chứng khoán Việt Nam
 
-Cập nhật: 2026-06-01
+Cập nhật: 2026-06-03
 
 Dự án xây dựng hệ thống Data Pipeline và ứng dụng tra cứu, phân tích thị
 trường chứng khoán Việt Nam đa nguồn. Kiến trúc hiện tại đi theo Medallion:
@@ -21,7 +21,8 @@ Bronze raw parquet/PDF
 
 Đã có:
 
-- Bronze ingestion cho 3 luồng: structured data, news, và BCTC PDF metadata.
+- Bronze ingestion cho 3 luồng: structured data, news (RSS + HTML hybrid), và BCTC PDF metadata
+  (structured: listing universe ~1,500+ mã HOSE/HNX; news: VnExpress, CafeF, VnEconomy HTML; BCTC: HNX crawl).
 - Silver transforms cho 8 dataset:
   - `price`
   - `index_price`
@@ -40,53 +41,49 @@ schema `gold`.
 - FastAPI backend read-only, chỉ đọc `gold`.
 - React/Vite/TypeScript frontend đọc API, có dashboard và trang chi tiết ticker.
 - Pytest config chạy được từ repo root, không cần set tay `PYTHONPATH`.
+- **Airflow 3.2** DAG orchestration (`docker/airflow/`) — 5 DAG bronze→silver→load→dbt; xem [README_airflow.md](docker/airflow/README_airflow.md).
 
 Chưa nằm trong scope hiện tại:
 
-- Airflow DAG orchestration.
 - OCR/PDF table parsing hoặc extract financial facts từ PDF.
 - Authentication, authorization, write endpoints.
 - Streaming realtime intraday, cloud deployment, RAG/chatbot, ML sentiment nâng cao.
 
 ## Snapshot dữ liệu local
 
-Các số liệu dưới đây được đọc từ `data-lake/silver` trong workspace local ngày
-2026-06-01. Thư mục `data-lake/` bị ignore bởi git, nên row count có thể thay
-đổi sau khi rerun pipeline.
+Các số liệu dưới đây quét từ `data-lake/` trong workspace local (**2026-06-03**).
+`data-lake/` bị gitignore — số liệu thay đổi sau mỗi lần ingest. **Gold (PostgreSQL)**
+chỉ khớp snapshot này sau `load-silver` + `dbt run` trên cùng bộ Silver.
 
 
-| Dataset           | Số dòng Silver | Phân vùng mới nhất              | Log chạy |
-| ----------------- | ----------- | ------------------------------- | -------- |
-| `price`           | 62,339      | `trading_date=2026-05-18`       | có       |
-| `index_price`     | 6,234       | `trading_date=2026-05-18`       | có       |
-| `listing`         | 1,535       | `current`                       | có       |
-| `company`         | 50          | `current`                       | có       |
-| `financial_ratio` | 15,282      | `period_type=quarter/year=2026` | có       |
-| `price_board`     | 50          | `trading_date=2026-05-18`       | có       |
-| `news`            | 804         | `date=2026-05-19`               | có       |
-| `bctc_pdf_meta`   | 1,458       | `date=2026-05-14`               | có       |
+### Silver — partition mới nhất (đại diện “hiện tại”)
 
+| Dataset | Rows (partition mới nhất) | Partition mới nhất | Ghi chú |
+| --- | ---: | --- | --- |
+| `price` | 557 | `trading_date=2026-06-03` | Nhiều partition lịch sử (~1,250 ngày) nếu đã backfill OHLCV |
+| `index_price` | 5 | `trading_date=2026-06-03` | |
+| `listing` | 1,532 | `current` | Bronze listing ~3,244 dòng (mọi loại CK trên sàn) |
+| `company` | 703 | `current` | Full listing universe (HOSE/HNX filter) |
+| `financial_ratio` | (multi) | `period_type=*/year=*` | Tích lũy nhiều kỳ / snapshot ratio |
+| `price_board` | 703 | `trading_date=2026-06-03` | Silver dedupe; Bronze luôn **1** `snapshot_at`/run, số mã phụ thuộc profile chạy |
+| `news` | 924 | `date=2026-06-03` | Bronze cùng ngày: RSS ~934 + HTML ~111 |
+| `bctc_pdf_meta` | 1,867 | `date=2026-06-03` | Metadata crawl HNX (mọi status) |
 
-Snapshot Warehouse/Gold đã được tài liệu hóa theo cùng dữ liệu demo:
+### Bronze — đặc thù vận hành (2026-06-03)
 
-- `silver.price`: 62,339 rows
-- `silver.index_price`: 6,234 rows
-- `silver.listing`: 1,535 rows
-- `silver.company`: 50 rows
-- `silver.financial_ratio`: 15,282 rows
-- `silver.price_board`: 50 rows
-- `silver.news`: 804 rows
-- `silver.bctc_pdf_meta`: 1,458 rows
-- `gold.mart_stock_daily`: 62,339 rows
-- `gold.mart_company_profile`: 50 rows
-- `gold.mart_market_overview`: 1,247 rows
-- `gold.mart_stock_news_daily`: 154 rows
-- `gold.fact_news_article`: explode theo `(article_id, ticker)` từ `silver.news` (bài có title + ngày đăng; xem `stg_news`)
-- `gold.mart_stock_news_signal`: mới 2026-06, tin theo phiên giao dịch + weighted sentiment
-- `gold.mart_price_board`: mới 2026-06, bid/ask + foreign flow
-- `gold.mart_financial_summary`: mới 2026-06, financial ratio pivot wide
-- `gold.mart_bctc_documents`: 952 rows
-- `gold.mart_ticker_directory`: union ticker từ price, news, BCTC, company
+| Path | Ghi chú |
+| --- | --- |
+| `Structure_Data/price_board/snapshot_at=*` | **1 partition** / run; mặc định full listing HOSE/HNX (batched, gộp 1 snapshot) |
+| `Unstructure_Data/news/{rss,html}/date=2026-06-03` | Hai kênh riêng; Silver gộp + dedupe |
+| `Semi_Structure_Data/bctc_annual_pdf_meta/.../date=2026-06-03` | Partition theo **ngày chạy job**, không theo ngày công bố HNX |
+
+### Gold (PostgreSQL) — sau `dbt run`
+
+Marts chính: `mart_stock_daily`, `mart_company_profile`, `mart_market_overview`,
+`mart_stock_news_signal`, `mart_price_board`, `mart_financial_summary`,
+`fact_news_article`, `mart_bctc_documents`, `mart_ticker_directory`.
+Số dòng Gold phụ thuộc lần load/dbt gần nhất — tham chiếu demo cũ (~62k price, ~952 BCTC web-ready)
+trong [Docs/dbt_outputs_and_lineage.md](Docs/dbt_outputs_and_lineage.md) nếu chưa rebuild.
 
 ## Cấu trúc repository
 
@@ -94,7 +91,7 @@ Snapshot Warehouse/Gold đã được tài liệu hóa theo cùng dữ liệu de
 stock-pipeline/
 |-- ingestion/                # Mã ingestion Bronze và notebook quản lý
 |   |-- structure_data/        # vnstock OHLCV, listing, company, ratios, board
-|   |-- unstructured_data/     # Ingest tin tức RSS/HTML
+|   |-- unstructured_data/     # RSS/HTML; hybrid selectors + html_discovery CLI
 |   `-- semi_structure_data/   # Crawl/download metadata BCTC PDF từ HNX
 |-- pipeline/silver/           # Bộ biến đổi Bronze -> Silver và CLI
 |-- warehouse/
@@ -119,6 +116,7 @@ stock-pipeline/
 | [Docs/Structure_data_flow.md](Docs/Structure_data_flow.md) | vnstock OHLCV, listing, company, ratios, price board → Gold/API/UI |
 | [Docs/News_data_flow.md](Docs/News_data_flow.md) | RSS/HTML news → `fact_news_article`, sentiment daily |
 | [Docs/BCTC_data_flow.md](Docs/BCTC_data_flow.md) | HNX BCTC PDF crawl → `mart_bctc_documents` |
+| [Docs/dbt_outputs_and_lineage.md](Docs/dbt_outputs_and_lineage.md) | Silver → Gold lineage, API/UI mapping |
 
 ## Yêu cầu trước khi chạy
 
@@ -157,10 +155,23 @@ Các biến môi trường quan trọng:
 | `DATABASE_URL`                 | Kết nối PostgreSQL cho FastAPI và loader                        |
 | `VITE_API_URL`                 | Base URL API cho frontend, mặc định `/api`                      |
 | `HNX_SSL_VERIFY`               | Công tắc dev cho xác thực SSL HNX                               |
-| `HNX_CRAWL_MAX_LIST_PAGES`     | Giới hạn số trang crawl BCTC khi test                           |
+| `hnx_max_list_pages` (config)  | Số trang HNX mặc định **10** (DAG/CLI); notebook `BCTC_RUN_PROFILE=backfill` → **500** |
+| `HNX_CRAWL_MAX_LIST_PAGES`     | Env tùy chọn ghi đè `hnx_max_list_pages` khi resolve              |
 | `BCTC_INGEST_ALL_CRAWLED_PDFS` | Tải mọi PDF đã crawl thay vì chỉ báo cáo tài chính              |
 | `BCTC_ALLOW_EN_DOCS`           | Cho phép BCTC tiếng Anh đi qua filter                           |
 | `NEWS_RATE_LIMIT_RPM`          | Giới hạn tốc độ crawl RSS/HTML (notebook; mặc định thường 60)    |
+
+Tham số `IngestionConfig` quan trọng (structured Bronze):
+
+| Tham số | Ý nghĩa |
+|---|---|
+| `use_listing_as_universe` | Dùng listing làm ticker universe tự động |
+| `price_batch_size` | Số mã/batch khi fetch giá OHLCV |
+| `price_board_use_listing_universe` | Mặc định **`True`** = mã từ listing; `False` = watchlist 50 mã |
+| `price_board_max_tickers` | Mặc định **5000** (cap full listing) |
+| `price_board_batched` | Mặc định **`True`** — batch 50 mã, gộp **1** `snapshot_at`/run |
+| `financial_ratio_exchange_filter` | Chỉ fetch ratio cho HOSE/HNX mặc định |
+| `delay_between_batches_sec` | Nghỉ giữa batch (giây) |
 
 
 ## Runbook end-to-end
@@ -168,7 +179,42 @@ Các biến môi trường quan trọng:
 Nếu `data-lake/` đã có Bronze/Silver files, có thể bắt đầu từ layer cần chạy.
 Bronze không load thẳng vào PostgreSQL; DB chỉ nhận dữ liệu từ Silver parquet.
 
+### Notebook vs DAG Airflow
+
+DAG mirror **mặc định class/config**, không copy giá trị backfill từ notebook.
+Hướng dẫn vận hành: [docker/airflow/README_airflow.md](docker/airflow/README_airflow.md).
+
+
+| Luồng | Notebook | DAG / `python -m` (mặc định) |
+| --- | --- | --- |
+| Structured | `ingest_structure_data_manager.ipynb`: `UNIVERSE_MODE=full_listing`, `RUN_PROFILE=backfill`, `PRICE_BOARD_MODE=watchlist_50` | Airflow tách thành `structured_daily` (price, index, price_board incremental) và `structured_monthly` (listing, company, financial_ratio full HOSE/HNX) |
+| News | `ingest_news.ipynb`: `days_back=30` | `NewsIngestionConfig()` — `days_back=1` |
+| BCTC | `ingest_bctc_pdf_manager.ipynb`: `BCTC_RUN_PROFILE=backfill` → 500 trang | `SemiStructuredIngestionConfig()` — `hnx_max_list_pages=10` |
+
+Chi tiết: [Structure_data_flow.md](Docs/Structure_data_flow.md) · [News_data_flow.md](Docs/News_data_flow.md) · [BCTC_data_flow.md](Docs/BCTC_data_flow.md).
+
+### Backfill -> DAG theo dataset
+
+| Dataset | Backfill notebook | DAG mặc định sau backfill | Bronze lưu ở đâu | Silver / warehouse |
+| --- | --- | --- | --- | --- |
+| `listing` | Lấy full snapshot toàn bộ listing, rồi downstream dùng filter `HOSE/HNX` để tạo universe chạy structured | `structured_monthly`: refresh full listing 1 tháng 1 lần | `data-lake/raw/Structure_Data/listing/master/listing.parquet` | `data-lake/silver/listing/current/` -> `silver.listing` -> `gold.dim_security`, `gold.mart_ticker_directory` |
+| `price` | Lấy full OHLCV 5 năm cho toàn bộ ticker trong listing sau filter `HOSE/HNX` | `structured_daily`: incremental, mặc định `watchlist50`, overlap ~2 ngày; có thể đổi sang universe listing bằng `STRUCTURED_DAG_UNIVERSE=listing` | `data-lake/raw/Structure_Data/price/year=<YYYY>/month=<MM>/<TICKER>.parquet` | `data-lake/silver/price/trading_date=<YYYY-MM-DD>/` -> `silver.price` -> `gold.fact_price_daily`, `gold.mart_stock_daily` |
+| `index_price` | Lấy full 5 năm cho 5 chỉ số cố định `VNINDEX`, `VN30`, `HNXINDEX`, `HNX30`, `UPCOMINDEX` | `structured_daily`: incremental theo ngày cho cùng 5 chỉ số | `data-lake/raw/Structure_Data/index/year=<YYYY>/month=<MM>/<INDEX>.parquet` | `data-lake/silver/index_price/trading_date=<YYYY-MM-DD>/` -> `silver.index_price` -> `gold.fact_index_daily`, `gold.mart_market_overview` |
+| `company` | Lấy snapshot company cho toàn bộ ticker tìm được từ listing universe | `structured_monthly`: refresh full HOSE/HNX 1 tháng 1 lần | `data-lake/raw/Structure_Data/company/snapshots/snapshot_date=<run_date>/company_overview.parquet` | `data-lake/silver/company/current/` -> `silver.company` -> `gold.dim_company`, `gold.mart_company_profile` |
+| `financial_ratio` | Lấy full ratio cho toàn bộ ticker HOSE/HNX từ listing universe | `structured_monthly`: refresh full HOSE/HNX 1 tháng 1 lần | `data-lake/raw/Structure_Data/financial_ratio/snapshot_date=<run_date>/<TICKER>.parquet` | `data-lake/silver/financial_ratio/period_type=<...>/year=<YYYY>/` -> `silver.financial_ratio` -> `gold.mart_financial_summary`, `gold.mart_company_profile` |
+| `price_board` | Notebook mặc định chỉ lấy snapshot hiện tại cho `watchlist50` | `structured_daily`: snapshot current cho `watchlist50` mỗi ngày | `data-lake/raw/Structure_Data/price_board/snapshot_at=<timestamp>/PRICE_BOARD_SNAPSHOT.parquet` | `data-lake/silver/price_board/trading_date=<YYYY-MM-DD>/` -> `silver.price_board` -> `gold.mart_price_board` |
+| `news` | Lấy bài trong 30 ngày gần nhất, nhưng ghi chung vào partition của **ngày chạy backfill** | `news_daily`: `days_back=1`, mỗi ngày một run partition mới | `data-lake/raw/Unstructure_Data/news/<rss|html>/date=<run_date>/PART-000.parquet` | `data-lake/silver/news/date=<run_date>/` -> `silver.news` -> `gold.fact_news_article`, `gold.mart_stock_news_signal` |
+| `bctc_pdf_meta` + PDF | Notebook hiện tại crawl 500 trang HNX gần nhất, tải metadata + PDF của các tài liệu đạt filter | `bctc_weekly`: quét lại top 10 trang gần nhất mỗi tuần, rồi upsert theo `doc_id` | `data-lake/raw/Semi_Structure_Data/bctc_annual_pdf_meta/source=hnx/date=<run_date>/PART-000.parquet` và `data-lake/raw/Semi_Structure_Data/bctc_annual_pdf/source=hnx/date=<run_date>/.../*.pdf` | `data-lake/silver/bctc_pdf_meta/date=<run_date>/` -> `silver.bctc_pdf_meta` -> `gold.mart_bctc_documents` |
+
+Ghi chú vận hành:
+
+- `price` và `index_price` là hai dataset structured có incremental thật theo `trading_date` + watermark.
+- `news` và `bctc_pdf_meta` partition theo **ngày chạy job**, không theo `published_at`.
+- `bctc_weekly` hiện là mô hình **rescan top 10 pages + upsert `doc_id`**, chưa phải crawl incremental theo ngày công bố HNX.
+
 ### 1. Ingestion Bronze
+
+Notebook điều phối: `ingestion/ingest_structure_data_manager.ipynb`, `ingestion/ingest_news.ipynb`, `ingestion/ingest_bctc_pdf_manager.ipynb`.
 
 Dữ liệu cấu trúc:
 
@@ -198,7 +244,10 @@ Metadata/tải PDF BCTC:
 @'
 from ingestion.semi_structure_data import SemiStructuredIngestionConfig, run_bctc_annual_pipeline
 
+# DAG weekly (mac dinh): 10 trang HNX tu trang 1
 cfg = SemiStructuredIngestionConfig()
+# Backfill lan dau (hoac notebook BCTC_RUN_PROFILE=backfill):
+# cfg = SemiStructuredIngestionConfig(hnx_max_list_pages=500)
 print(run_bctc_annual_pipeline(cfg, include_download=True))
 '@ | python -
 ```
@@ -428,6 +477,29 @@ Lineage endpoint chính (2026-06):
 | `GET /board/{symbol}` | `gold.mart_price_board` |
 | `GET /board/{symbol}/foreign-flow` | `gold.mart_price_board` |
 
+Lineage API -> Gold marts/views (đầy đủ theo backend hiện tại):
+
+| Endpoint | Gold source | Date/filter basis |
+|---|---|---|
+| `GET /health` | N/A (no DB read) | N/A |
+| `GET /tickers` | `gold.mart_ticker_directory` | search text trên ticker/name flags |
+| `GET /market/overview` | `gold.mart_market_overview` | `date` -> `trading_date` |
+| `GET /companies/{symbol}` | `gold.mart_company_profile` | ticker exact |
+| `GET /prices/{symbol}` | `gold.mart_stock_daily` | `from/to` -> `trading_date` |
+| `GET /indicators/{symbol}` | `gold.mart_stock_daily` | `from/to` -> `trading_date` |
+| `GET /financials/{symbol}` | `gold.mart_financial_summary` | `period_type` (`quarter` or `annual`) |
+| `GET /board/{symbol}` | `gold.mart_price_board` | `from/to` -> `trading_date` |
+| `GET /board/{symbol}/foreign-flow` | `gold.mart_price_board` | `from/to` -> `trading_date` (limit by `days`) |
+| `GET /news/articles` | `gold.fact_news_article` | `ticker,q,sentiment,relevance,from,to` (`published_date`) |
+| `GET /news/market` | `gold.fact_news_article` | latest by `published_at` |
+| `GET /news/{symbol}/articles` | `gold.fact_news_article` | ticker + `relevance,from,to` (`published_date`) |
+| `GET /news/{symbol}/signal` | `gold.mart_stock_news_signal` | latest `trading_date` |
+| `GET /news/{symbol}` | `gold.mart_stock_news_signal` | `from/to` -> `trading_date` |
+| `GET /bctc/documents` | `gold.mart_bctc_documents` | `ticker,year,q,from,to` (`published_at::date`) |
+| `GET /bctc/recent` | `gold.mart_bctc_documents` | latest by `published_at` |
+| `GET /bctc/{symbol}` | `gold.mart_bctc_documents` | ticker + `year,from,to` (`published_at::date`) |
+| `GET /bctc/{symbol}/file/{doc_id}` | `gold.mart_bctc_documents` (`pdf_path`) | doc_id lookup |
+
 Smoke check:
 
 ```powershell
@@ -450,7 +522,7 @@ curl "http://localhost:8000/bctc/recent?page_size=10"
 curl http://localhost:8000/bctc/AAV
 ```
 
-### 6.1. Current API/UI data behavior (2026-06-02)
+### 6.1. Current API/UI data behavior (2026-06-03)
 
 - Dashboard index cards call `GET /market/overview?date=...` when a date is selected. If no date is selected, API returns the latest `gold.mart_market_overview.trading_date`.
 - Stock detail has a shared date range filter. The range is passed to prices, indicators, board, foreign flow, stock news signal, and BCTC documents through the DB date fields (`trading_date`, mapped news `trading_date`, or BCTC `published_at::date`).

@@ -1,0 +1,34 @@
+FROM apache/airflow:3.2.2-python3.12
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        libpq-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+USER airflow
+
+ARG AIRFLOW_VERSION=3.2.2
+ARG PYTHON_VERSION=3.12
+ARG CONSTRAINT_URL="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
+
+COPY requirements-airflow.txt /tmp/requirements-airflow.txt
+
+# Two-pass install to avoid pip "resolution-too-deep" on top of the base image:
+#   1) pinned non-dbt deps with the official Airflow constraint file (fast, no backtracking)
+#   2) dbt-core/dbt-postgres (same 1.10.x minor) on their own small graph
+RUN pip install --no-cache-dir --constraint "${CONSTRAINT_URL}" \
+        $(grep -v '^dbt-' /tmp/requirements-airflow.txt \
+            | grep -v '^#' | grep -v '^$' | tr '\n' ' ')
+RUN pip install --no-cache-dir dbt-core==1.10.22 dbt-postgres==1.10.0
+
+# vnstock pulls vnstock_ezchart>=1.0.1 (numpy<2.3). Install without the constraint
+# so only its own subtree (numpy/pandas) resolves; Airflow deps are untouched.
+RUN pip install --no-cache-dir "vnstock>=4.0.3"
+
+ENV PYTHONPATH=/opt/stock-pipeline
+ENV STOCK_PIPELINE_ROOT=/opt/stock-pipeline
+
+WORKDIR /opt/stock-pipeline

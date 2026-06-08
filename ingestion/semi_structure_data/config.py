@@ -41,6 +41,21 @@ class SemiStructuredIngestionConfig:
     allow_en_docs_for_parse: bool = False
     # API cong bo HNX (neu co): uu tien field nay, khong thi bien moi truong HNX_DISCLOSURE_API_URL
     hnx_disclosure_api_url: str | None = None
+    # HNX list crawl: so trang POST (trang 1 = moi nhat). DAG weekly mac dinh 10; backfill notebook 500.
+    hnx_max_list_pages: int = 10
+
+    def __post_init__(self) -> None:
+        if not (1 <= self.hnx_max_list_pages <= 500):
+            raise ValueError(
+                f"hnx_max_list_pages must be in [1, 500], got {self.hnx_max_list_pages}"
+            )
+
+    def resolved_hnx_max_list_pages(self) -> int:
+        """Env HNX_CRAWL_MAX_LIST_PAGES overrides config when set (backfill / test)."""
+        raw = os.environ.get("HNX_CRAWL_MAX_LIST_PAGES", "").strip()
+        if raw.isdigit():
+            return max(1, min(int(raw), 500))
+        return max(1, min(int(self.hnx_max_list_pages), 500))
 
     def resolved_hnx_disclosure_api_url(self) -> str | None:
         raw = (self.hnx_disclosure_api_url or os.environ.get("HNX_DISCLOSURE_API_URL") or "").strip()

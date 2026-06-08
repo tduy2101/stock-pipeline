@@ -63,11 +63,35 @@ rss_feeds:
     url: https://vietstock.vn/738/doanh-nghiep/co-tuc.rss
   - id: vietstock_tang_von_ma
     url: https://vietstock.vn/764/doanh-nghiep/tang-von-m-a.rss
+  - id: vietstock_tai_chinh_ngan_hang
+    url: https://vietstock.vn/757/tai-chinh/ngan-hang.rss
+  - id: vietstock_tai_chinh_thue_va_ngan_sach
+    url: https://vietstock.vn/758/tai-chinh/thue-va-ngan-sach.rss
+  - id: vietstock_nhan_dinh_thi_truong
+    url: https://vietstock.vn/1636/nhan-dinh-phan-tich/nhan-dinh-thi-truong.rss
+  - id: vietstock_phan_tich_co_ban
+    url: https://vietstock.vn/582/nhan-dinh-phan-tich/phan-tich-co-ban.rss
+  - id: vietstock_phan_tich_ky_thuat
+    url: https://vietstock.vn/585/nhan-dinh-phan-tich/phan-tich-ky-thuat.rss
+  - id: vietstock_dau_tu_kinh_doanh_nho
+    url: https://vietstock.vn/4261/tai-chinh-ca-nhan/dau-tu-kinh-doanh-nho.rss
 
+
+# Multi-source config for news ingestion.
+# Edit URLs as needed; respect site ToS / robots.txt.
+#
+# HTML options (per html_sources item):
+#   detail_mode: hybrid | css | heuristic
+#     hybrid (default): YAML CSS first, fallback JSON-LD / OpenGraph / DOM heuristics
+#   auto_expand_sections: true  -> crawl thêm mục từ nav (auto_expand_limit, default 5)
+#
+# Gợi ý selector tự động:
+#   python -m ingestion.unstructured_data.html_discovery --url https://vnexpress.net/kinh-doanh
 
 html_sources:
   - id: vnexpress_kinh_doanh
     enabled: true
+    detail_mode: hybrid
     list_url: "https://vnexpress.net/kinh-doanh"
     base_url: "https://vnexpress.net"
     link_css: "article.item-news h3.title-news a"
@@ -82,6 +106,7 @@ html_sources:
 
   - id: vnexpress_chung_khoan
     enabled: true
+    detail_mode: hybrid
     list_url: "https://vnexpress.net/kinh-doanh/chung-khoan"
     base_url: "https://vnexpress.net"
     link_css: "article.item-news h3.title-news a"
@@ -98,6 +123,7 @@ html_sources:
   # RSS feeds above are the fallback primary source.
   - id: cafef_thi_truong_chung_khoan
     enabled: true
+    detail_mode: hybrid
     list_url: "https://cafef.vn/thi-truong-chung-khoan.chn"
     base_url: "https://cafef.vn"
     link_css: "h3 a[href$='.chn'], a[href$='.chn']"
@@ -109,6 +135,52 @@ html_sources:
       body_css: "div#mainContent p, div#contentdetail p, article p"
       published_at_css: "span.date, span.time, span.pdate, p.time"
       author_css: "p.author, .author"
+
+  # VnEconomy — layout Hemera CMS; hybrid + OpenGraph khi CSS đổi
+  - id: vneconomy_thi_truong
+    enabled: true
+    detail_mode: hybrid
+    list_url: "https://vneconomy.vn/thi-truong.htm"
+    base_url: "https://vneconomy.vn"
+    link_css: >-
+      div.title-block h2 a[href$='.htm'],
+      div.item_content h3.name-item a[href$='.htm'],
+      div.general-item_content h3.name a[href$='.htm']
+    source_label: "vneconomy"
+    section: "thi-truong"
+    detail:
+      title_css: "h1"
+      body_css: "main.main-page p"
+
+  - id: vneconomy_kinh_te_so
+    enabled: true
+    detail_mode: hybrid
+    list_url: "https://vneconomy.vn/kinh-te-so.htm"
+    base_url: "https://vneconomy.vn"
+    link_css: >-
+      div.title-block h2 a[href$='.htm'],
+      div.item_content h3.name-item a[href$='.htm'],
+      div.general-item_content h3.name a[href$='.htm']
+    source_label: "vneconomy"
+    section: "kinh-te-so"
+    detail:
+      title_css: "h1"
+      body_css: "main.main-page p"
+
+  - id: vneconomy_tai_chinh
+    enabled: true
+    detail_mode: hybrid
+    list_url: "https://vneconomy.vn/tai-chinh.htm"
+    base_url: "https://vneconomy.vn"
+    link_css: >-
+      div.title-block h2 a[href$='.htm'],
+      div.item_content h3.name-item a[href$='.htm'],
+      div.general-item_content h3.name a[href$='.htm']
+    source_label: "vneconomy"
+    section: "tai-chinh"
+    detail:
+      title_css: "h1"
+      body_css: "main.main-page p"
 
   - id: vietstock_co_phieu_html
     # Vietstock list pages are frequently blocked/404 in server-side crawl.

@@ -1,0 +1,179 @@
+# Apache Airflow 3.2.x — stock-pipeline orchestration (LocalExecutor, 8GB RAM friendly)
+# Usage:
+#   cd docker/airflow
+#   cp .env.airflow.example .env.airflow
+#   docker compose -f docker-compose.airflow.yml up airflow-init
+#   docker compose -f docker-compose.airflow.yml up -d
+
+---
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+  image: ${AIRFLOW_IMAGE_NAME:-stock-pipeline-airflow:3.2.2}
+  env_file:
+    - ../../.env
+    - ${ENV_FILE_PATH:-.env.airflow}
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET:-airflow_jwt_secret}
+    AIRFLOW__API_AUTH__JWT_ISSUER: ${AIRFLOW__API_AUTH__JWT_ISSUER:-airflow}
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Ho_Chi_Minh
+    STOCK_PIPELINE_ROOT: /opt/stock-pipeline
+    PYTHONPATH: /opt/stock-pipeline
+    DATABASE_URL: ${DATABASE_URL:-postgresql://stock:stock@host.docker.internal:55432/stock_pipeline}
+    PG_HOST: ${PG_HOST:-host.docker.internal}
+    PG_PORT: ${PG_PORT:-55432}
+    _PIP_ADDITIONAL_REQUIREMENTS: ""
+    AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
+  volumes:
+    - ../../data-lake:/opt/airflow/data-lake
+    - ../../:/opt/stock-pipeline
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./config:/opt/airflow/config
+  user: "${AIRFLOW_UID:-50000}:0"
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  depends_on: &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: airflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    ports:
+      - "5433:5432"
+    volumes:
+      - airflow-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        if [[ -z "$${AIRFLOW_UID}" ]]; then
+          echo "WARNING: AIRFLOW_UID not set. Using default 50000."
+          export AIRFLOW_UID=50000
+        fi
+
+        echo "Creating Airflow folders..."
+        mkdir -p /opt/airflow/{logs,dags,plugins,config}
+        mkdir -p /opt/stock-pipeline/data-lake
+
+        echo "Airflow version:"
+        /entrypoint airflow version
+
+        echo "Initializing Airflow database..."
+        /entrypoint airflow db migrate
+
+        echo "Creating admin user if missing..."
+        /entrypoint airflow users create \
+          --username "$${_AIRFLOW_WWW_USER_USERNAME:-airflow}" \
+          --firstname Airflow \
+          --lastname Admin \
+          --role Admin \
+          --email admin@example.com \
+          --password "$${_AIRFLOW_WWW_USER_PASSWORD:-airflow}" || true
+
+        echo "Generating default airflow.cfg if missing..."
+        /entrypoint airflow config list >/dev/null
+
+        echo "Fixing folder ownership..."
+        chown -R "$${AIRFLOW_UID}:0" /opt/airflow/{logs,dags,plugins,config}
+
+        echo "Airflow init completed."
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+      _PIP_ADDITIONAL_REQUIREMENTS: ""
+    user: "0:0"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    container_name: airflow-apiserver
+    command: api-server
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    container_name: airflow-dag-processor
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-cli:
+    <<: *airflow-common
+    container_name: airflow-cli
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - airflow
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  airflow-postgres-data:

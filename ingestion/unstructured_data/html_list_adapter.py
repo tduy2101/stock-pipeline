@@ -15,7 +15,9 @@ from bs4 import BeautifulSoup
 
 from ingestion.common import call_with_retry, wait_for_rate_limit
 
+from .article_heuristics import extract_article_heuristic
 from .config import NewsIngestionConfig
+from .html_discovery import discover_sections
 from .schema import (
     NEWS_COLUMNS,
     compact_text,
@@ -60,6 +62,73 @@ SOURCE_DATE_SCOPES = {
 }
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+_DETAIL_MODES = frozenset({"css", "heuristic", "hybrid"})
+
+
+def _resolved_detail_mode(spec: dict[str, Any]) -> str:
+    raw = compact_text(spec.get("detail_mode") or "hybrid").lower()
+    return raw if raw in _DETAIL_MODES else "hybrid"
+
+
+def _expand_list_specs(spec: dict[str, Any], list_html: str) -> list[tuple[str, str]]:
+    """Return (list_url, link_css) pairs — auto_expand adds section URLs from nav."""
+    list_url = compact_text(spec.get("list_url"))
+    link_css = compact_text(spec.get("link_css"))
+    if not list_url or not link_css:
+        return []
+    pairs: list[tuple[str, str]] = [(list_url, link_css)]
+    if not spec.get("auto_expand_sections"):
+        return pairs
+    limit = int(spec.get("auto_expand_limit") or 5)
+    for section in discover_sections(list_html, list_url, limit=limit):
+        pairs.append((section.url, link_css))
+    return pairs
+
+
+def _merge_detail_fields(
+    *,
+    detail_mode: str,
+    detail_soup: BeautifulSoup,
+    detail_html: str,
+    detail_cfg: dict[str, Any],
+    source: str,
+    fallback_title: str,
+) -> tuple[str, str, str, datetime | None, dict[str, str]]:
+    css_title = _select_one_text(detail_soup, detail_cfg.get("title_css"))
+    css_summary = _select_one_text(detail_soup, detail_cfg.get("summary_css"))
+    css_body = _select_many_text(detail_soup, detail_cfg.get("body_css"))
+    css_published = parse_published_at(detail_soup, source)
+
+    title = css_title or fallback_title
+    summary = strip_html(css_summary)
+    body_text = strip_html(css_body)
+    published_at = css_published
+    methods: dict[str, str] = {}
+
+    if detail_mode == "css":
+        return title, summary, body_text, published_at, methods
+
+    heuristic = extract_article_heuristic(detail_html)
+    if detail_mode in ("heuristic", "hybrid"):
+        if detail_mode == "heuristic" or not title or title == fallback_title:
+            if heuristic.title:
+                title = heuristic.title
+                methods["title"] = heuristic.methods.get("title", "heuristic")
+        if detail_mode == "heuristic" or not summary:
+            if heuristic.summary:
+                summary = heuristic.summary
+                methods["summary"] = heuristic.methods.get("summary", "heuristic")
+        if detail_mode == "heuristic" or not body_text:
+            if heuristic.body_text:
+                body_text = heuristic.body_text
+                methods["body"] = heuristic.methods.get("body", "heuristic")
+        if detail_mode == "heuristic" or published_at is None:
+            if heuristic.published_at:
+                published_at = heuristic.published_at
+                methods["published_at"] = heuristic.methods.get("published_at", "heuristic")
+
+    return title, summary, body_text, published_at, methods
 
 
 def _select_one_text(soup: BeautifulSoup, css: str | None) -> str:
@@ -178,16 +247,19 @@ def fetch_html_list_news(
         if not list_url or not link_css:
             continue
 
+        detail_cfg = spec.get("detail") or {}
+        detail_mode = _resolved_detail_mode(spec)
+
         wait_for_rate_limit(cfg.rate_limit_rpm)
 
-        def _get() -> str:
+        def _get_list() -> str:
             r = session.get(list_url, timeout=cfg.timeout_sec, headers=merged_headers)
             r.raise_for_status()
             return r.text
 
         try:
             html_text = call_with_retry(
-                _get,
+                _get_list,
                 max_attempts=cfg.api_retry_max_attempts,
                 base_delay_sec=cfg.api_retry_base_delay_sec,
                 label=f"html:{source_label}",
@@ -196,92 +268,131 @@ def fetch_html_list_news(
             LOGGER.warning("Failed HTML list %s: %s", list_url, ex)
             continue
 
-        soup = BeautifulSoup(html_text, "html.parser")
-        anchors = soup.select(link_css)
-        anchors_found = len(anchors)
-        detail_cfg = spec.get("detail") or {}
+        list_pairs = _expand_list_specs(spec, html_text)
+        if not list_pairs:
+            continue
+
+        anchors_found = 0
         detail_success = 0
         rows_before = len(rows)
-        for a in anchors[:max_per]:
-            href = compact_text(a.get("href"))
-            title = compact_text(a.get_text())
-            if not href or not title:
-                continue
-            url = normalize_url(urljoin(list_url, href))
-            if not url:
-                continue
-            summary = ""
-            body_text = ""
-            published_at = None
-            if detail_cfg:
+        seen_urls: set[str] = set()
+
+        for current_list_url, current_link_css in list_pairs:
+            if current_list_url != list_url:
                 wait_for_rate_limit(cfg.rate_limit_rpm)
 
-                def _get_detail() -> str:
-                    r = session.get(url, timeout=cfg.timeout_sec, headers=merged_headers)
+                def _get_section() -> str:
+                    r = session.get(
+                        current_list_url,
+                        timeout=cfg.timeout_sec,
+                        headers=merged_headers,
+                    )
                     r.raise_for_status()
                     return r.text
 
                 try:
-                    detail_html = call_with_retry(
-                        _get_detail,
+                    html_text = call_with_retry(
+                        _get_section,
                         max_attempts=cfg.api_retry_max_attempts,
                         base_delay_sec=cfg.api_retry_base_delay_sec,
-                        label=f"html_detail:{source_label}",
+                        label=f"html:{source_label}",
                     )
-                    detail_soup = BeautifulSoup(detail_html, "html.parser")
-                    detail_title = _select_one_text(detail_soup, detail_cfg.get("title_css"))
-                    detail_summary = _select_one_text(detail_soup, detail_cfg.get("summary_css"))
-                    detail_body = _select_many_text(detail_soup, detail_cfg.get("body_css"))
-                    title = detail_title or title
-                    summary = strip_html(detail_summary)
-                    body_text = strip_html(detail_body)
-                    published_at = parse_published_at(detail_soup, source)
-                    detail_success += 1
                 except Exception as ex:
-                    LOGGER.debug("Failed HTML detail %s: %s", url, ex)
-            if detail_cfg and not published_at and not body_text:
-                continue
-            ticker = infer_ticker_with_universe(
-                [title, summary, body_text],
-                ticker_universe,
-            )
-            article_id = compute_article_id(
-                url=url,
-                source=source,
-                published_at=published_at or "",
-                ticker=ticker or "",
-                title=title,
-            )
-            rows.append(
-                {
-                    "article_id": article_id,
-                    "source": source,
-                    "ticker": ticker,
-                    "title": title,
-                    "summary": summary,
-                    "body_text": body_text,
-                    "url": url,
-                    "published_at": published_at,
-                    "fetched_at": fetched_at,
-                    "language": "vi",
-                    "raw_ref": safe_json_dumps(
-                        {
-                            "list_url": list_url,
-                            "href": href,
-                            "css": link_css,
-                            "source_label": source_label,
-                            "detail": detail_cfg,
-                        }
-                    ),
-                }
-            )
+                    LOGGER.debug("Failed HTML section %s: %s", current_list_url, ex)
+                    continue
+
+            soup = BeautifulSoup(html_text, "html.parser")
+            anchors = soup.select(current_link_css)
+            anchors_found += len(anchors)
+
+            for a in anchors[:max_per]:
+                href = compact_text(a.get("href"))
+                title = compact_text(a.get_text())
+                if not href or not title:
+                    continue
+                url = normalize_url(urljoin(current_list_url, href))
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                summary = ""
+                body_text = ""
+                published_at = None
+                extract_methods: dict[str, str] = {}
+                if detail_cfg or detail_mode in ("heuristic", "hybrid"):
+                    wait_for_rate_limit(cfg.rate_limit_rpm)
+
+                    def _get_detail() -> str:
+                        r = session.get(url, timeout=cfg.timeout_sec, headers=merged_headers)
+                        r.raise_for_status()
+                        return r.text
+
+                    try:
+                        detail_html = call_with_retry(
+                            _get_detail,
+                            max_attempts=cfg.api_retry_max_attempts,
+                            base_delay_sec=cfg.api_retry_base_delay_sec,
+                            label=f"html_detail:{source_label}",
+                        )
+                        detail_soup = BeautifulSoup(detail_html, "html.parser")
+                        title, summary, body_text, published_at, extract_methods = _merge_detail_fields(
+                            detail_mode=detail_mode,
+                            detail_soup=detail_soup,
+                            detail_html=detail_html,
+                            detail_cfg=detail_cfg,
+                            source=source,
+                            fallback_title=title,
+                        )
+                        if body_text or published_at:
+                            detail_success += 1
+                    except Exception as ex:
+                        LOGGER.debug("Failed HTML detail %s: %s", url, ex)
+                if (detail_cfg or detail_mode != "css") and not published_at and not body_text:
+                    continue
+                ticker = infer_ticker_with_universe(
+                    [title, summary, body_text],
+                    ticker_universe,
+                )
+                article_id = compute_article_id(
+                    url=url,
+                    source=source,
+                    published_at=published_at or "",
+                    ticker=ticker or "",
+                    title=title,
+                )
+                rows.append(
+                    {
+                        "article_id": article_id,
+                        "source": source,
+                        "ticker": ticker,
+                        "title": title,
+                        "summary": summary,
+                        "body_text": body_text,
+                        "url": url,
+                        "published_at": published_at,
+                        "fetched_at": fetched_at,
+                        "language": "vi",
+                        "raw_ref": safe_json_dumps(
+                            {
+                                "list_url": current_list_url,
+                                "href": href,
+                                "css": current_link_css,
+                                "source_label": source_label,
+                                "detail_mode": detail_mode,
+                                "detail": detail_cfg,
+                                "extract_methods": extract_methods,
+                            }
+                        ),
+                    }
+                )
 
         rows_added = len(rows) - rows_before
         LOGGER.info(
-            "HTML source=%s anchors_found=%d detail_success=%d rows_added=%d take<=%d",
+            "HTML source=%s mode=%s sections=%d anchors_found=%d detail_success=%d rows_added=%d take<=%d",
             list_url,
+            detail_mode,
+            len(list_pairs),
             anchors_found,
-            detail_success if detail_cfg else 0,
+            detail_success,
             rows_added,
             max_per,
         )

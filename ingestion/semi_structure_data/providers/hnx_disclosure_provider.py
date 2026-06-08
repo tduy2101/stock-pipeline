@@ -81,11 +81,8 @@ _ONCLICK_ARTICLE_SINGLE_RE = re.compile(
 _HNX_FORM_CONTENT_TYPE = "application/x-www-form-urlencoded; charset=UTF-8"
 
 
-def _max_list_pages() -> int:
-    raw = os.environ.get("HNX_CRAWL_MAX_LIST_PAGES", "").strip()
-    if raw.isdigit():
-        return max(1, min(int(raw), 500))
-    return 500
+def _max_list_pages(cfg: SemiStructuredIngestionConfig) -> int:
+    return cfg.resolved_hnx_max_list_pages()
 
 
 def _crawl_state_path(cfg: SemiStructuredIngestionConfig) -> Path:
@@ -371,7 +368,13 @@ def _fetch_hnx_live_api_records(cfg: SemiStructuredIngestionConfig) -> list[dict
             )
     page = start_page
 
-    max_pages = _max_list_pages()
+    max_pages = _max_list_pages(cfg)
+    LOGGER.info(
+        "HNX list crawl: max_pages=%s start_page=%s rate_limit_rpm=%s",
+        max_pages,
+        start_page,
+        cfg.rate_limit_rpm,
+    )
     while page <= max_pages:
 
         def _do_post() -> str:

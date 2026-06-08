@@ -4,6 +4,64 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+# VN30 (20) + 30 mã đa ngành — price board mặc định (DAG + notebook demo_50).
+DEFAULT_PRICE_BOARD_TICKERS: tuple[str, ...] = (
+    "ACB",
+    "BCM",
+    "BID",
+    "BVH",
+    "CTG",
+    "FPT",
+    "GAS",
+    "GVR",
+    "HDB",
+    "HPG",
+    "MBB",
+    "MSN",
+    "MWG",
+    "PLX",
+    "POW",
+    "SAB",
+    "SHB",
+    "SSI",
+    "STB",
+    "TCB",
+    "VCB",
+    "VHM",
+    "VIC",
+    "VJC",
+    "VNM",
+    "VPB",
+    "VRE",
+    "TPB",
+    "VIB",
+    "HVN",
+    "REE",
+    "PNJ",
+    "GMD",
+    "DGC",
+    "DPM",
+    "DCM",
+    "HSG",
+    "KDC",
+    "QNS",
+    "SCS",
+    "NVL",
+    "PDR",
+    "DXG",
+    "KDH",
+    "HDG",
+    "EVF",
+    "KBC",
+    "AGG",
+    "TCH",
+    "VPI",
+)
+
+
+def default_price_board_tickers() -> list[str]:
+    return list(DEFAULT_PRICE_BOARD_TICKERS)
+
 
 @dataclass
 class IngestionConfig:
@@ -36,7 +94,7 @@ class IngestionConfig:
     )
     primary_source: str = "kbs"
     fallback_source: str = "vci"
-    rate_limit_rpm: int = 10
+    rate_limit_rpm: int = 50
     years_back: int = 5
     use_incremental_window: bool = True
     incremental_window_days: int = 10
@@ -59,6 +117,50 @@ class IngestionConfig:
     financial_ratio_disable_source_on_transient_error: bool = True
     financial_ratio_abort_after_consecutive_source_errors: int = 2
     vnstock_api_key_env: str = "VNSTOCK_API_KEY"
+    # --- Listing-as-universe ---
+    use_listing_as_universe: bool = True
+    listing_exchange_filter: list[str] = field(
+        default_factory=lambda: ["HOSE", "HNX"]
+    )
+    listing_security_type_filter: list[str] = field(default_factory=list)
+    # Optional cap after listing load (env STRUCTURED_MAX_TICKERS in Airflow dev/test).
+    listing_max_tickers: int | None = None
+    # --- Batch ingestion ---
+    price_batch_size: int = 100
+    price_board_batch_size: int = 50
+    delay_between_batches_sec: float = 5.0
+    # Price board: mặc định full listing (cfg.tickers sau ingest listing); watchlist = tắt flag này.
+    price_board_use_listing_universe: bool = True
+    price_board_tickers: list[str] = field(default_factory=default_price_board_tickers)
+    price_board_max_tickers: int = 5000
+    price_board_batched: bool = True
+    # --- Financial ratio universe filter ---
+    financial_ratio_exchange_filter: list[str] = field(
+        default_factory=lambda: ["HOSE", "HNX"]
+    )
+    # Daily incremental: start from each ticker's bronze max date (skip if already current).
+    use_bronze_ticker_watermark: bool = False
+
+    def __post_init__(self) -> None:
+        if not (1 <= self.price_batch_size <= 1000):
+            raise ValueError(
+                f"price_batch_size must be in [1, 1000], got {self.price_batch_size}"
+            )
+        if not (1 <= self.price_board_batch_size <= 500):
+            raise ValueError(
+                "price_board_batch_size must be in [1, 500], "
+                f"got {self.price_board_batch_size}"
+            )
+        if not (1 <= self.price_board_max_tickers <= 5000):
+            raise ValueError(
+                "price_board_max_tickers must be in [1, 5000], "
+                f"got {self.price_board_max_tickers}"
+            )
+        if self.delay_between_batches_sec < 0:
+            raise ValueError(
+                "delay_between_batches_sec must be >= 0, "
+                f"got {self.delay_between_batches_sec}"
+            )
 
     def resolved_data_sources(self) -> list[str]:
         out: list[str] = []

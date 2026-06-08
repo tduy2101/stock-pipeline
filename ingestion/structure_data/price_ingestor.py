@@ -12,6 +12,7 @@ from .common import (
     build_price_like_schema,
     call_with_retry,
     log_ohlcv_quality,
+    max_trading_date_in_bronze_ticker_files,
     next_date_text,
     resolve_trading_date_watermark,
     save_monthly_ticker_parquets,
@@ -78,6 +79,8 @@ def _resolve_price_fetch_range(
     symbol: str,
     cfg: IngestionConfig,
     watermark: str | None | object = _WATERMARK_UNSET,
+    *,
+    ticker_bronze_max: str | None = None,
 ) -> tuple[str, str, str]:
     end = cfg.end_date
     if not cfg.use_incremental_window:
@@ -95,6 +98,14 @@ def _resolve_price_fetch_range(
             silver_dataset="price",
             gold_tables=("gold.fact_price", "gold.mart_stock_daily"),
         )
+
+    use_ticker_wm = bool(getattr(cfg, "use_bronze_ticker_watermark", False))
+    if use_ticker_wm and has_existing and ticker_bronze_max:
+        start = next_date_text(ticker_bronze_max)
+        if watermark and start < watermark:
+            start = watermark
+        return start, end, "incremental_ticker_bronze"
+
     if watermark and has_existing:
         return watermark, end, "incremental_watermark"
 
@@ -193,7 +204,14 @@ def ingest_prices(cfg: IngestionConfig | None = None) -> dict[str, list[str]]:
         gold_tables=("gold.fact_price", "gold.mart_stock_daily"),
     )
     for idx, symbol in enumerate(cfg.tickers[: cfg.max_tickers_per_run]):
-        start, end, range_mode = _resolve_price_fetch_range(symbol, cfg, watermark)
+        ticker_bronze_max = None
+        if getattr(cfg, "use_bronze_ticker_watermark", False):
+            ticker_bronze_max = max_trading_date_in_bronze_ticker_files(
+                cfg, "price", symbol
+            )
+        start, end, range_mode = _resolve_price_fetch_range(
+            symbol, cfg, watermark, ticker_bronze_max=ticker_bronze_max
+        )
         if start > end:
             LOGGER.info(
                 "[%s/%s] Skip %s: watermark is already past end_date (%s > %s)",
