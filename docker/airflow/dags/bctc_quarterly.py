@@ -1,4 +1,8 @@
-"""Weekly BCTC PDF: bronze → silver → load → dbt (Sat 10:00 ICT)."""
+"""Quarterly BCTC PDF: bronze -> silver -> load -> dbt.
+
+Runs at 10:00 ICT on 15 Feb/May/Aug/Nov, after the main quarterly
+financial-report disclosure window.
+"""
 
 from __future__ import annotations
 
@@ -23,21 +27,23 @@ DEFAULT_ARGS = {
 }
 
 with DAG(
-    dag_id="bctc_weekly",
-    description="BCTC HNX crawl/download, silver bctc_pdf_meta, load, dbt mart",
-    schedule="0 10 * * 6",
+    dag_id="bctc_quarterly",
+    description="Quarterly BCTC HNX crawl/download, silver bctc_pdf_meta, load, dbt mart",
+    schedule="0 10 15 2,5,8,11 *",
     start_date=pendulum.datetime(2025, 1, 1, tz="Asia/Ho_Chi_Minh"),
     catchup=False,
-    tags=["bctc", "bronze", "silver", "gold"],
+    tags=["bctc", "quarterly", "bronze", "silver", "gold"],
     default_args=DEFAULT_ARGS,
     doc_md="""
-    ## bctc_weekly
+    ## bctc_quarterly
 
-    **Bronze:** ``SemiStructuredIngestionConfig()`` — ``hnx_max_list_pages=10``, rate 10 rpm.
+    **Schedule:** 10:00 ICT on 15 Feb/May/Aug/Nov.
+
+    **Bronze:** ``SemiStructuredIngestionConfig()`` - ``hnx_max_list_pages=10``, rate 10 rpm.
 
     **Silver:** ``--dataset bctc_pdf_meta --run-partition <XCom>``.
 
-    **Load:** ``bctc_pdf_meta`` → ``silver.bctc_pdf_meta``
+    **Load:** ``bctc_pdf_meta`` -> ``silver.bctc_pdf_meta``
 
     **dbt:** ``+mart_bctc_documents``
     """,

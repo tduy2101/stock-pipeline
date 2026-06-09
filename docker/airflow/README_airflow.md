@@ -32,7 +32,7 @@ Pipeline warehouse (root docker-compose.yml)
 | `structured_daily` | T2–T6 16:30 | bronze price+index+price_board (50 mã) → silver (3 datasets) → load → dbt | `+mart_stock_daily +mart_price_board +mart_market_overview` |
 | `structured_monthly` | Ngày 1 hàng tháng 17:00 | bronze listing+company+financial_ratio (full HOSE/HNX) → silver (3 datasets) → load → dbt | `+mart_financial_summary +mart_company_profile` |
 | `news_daily` | Daily 06:00 | bronze news → silver `--run-partition` → load → dbt | `+mart_stock_news_signal +fact_news_article` |
-| `bctc_weekly` | T7 10:00 | bronze BCTC → silver `bctc_pdf_meta` → load → dbt | `+mart_bctc_documents` |
+| `bctc_quarterly` | 15/02, 15/05, 15/08, 15/11 10:00 | bronze BCTC → silver `bctc_pdf_meta` → load → dbt | `+mart_bctc_documents` |
 | `gold_full_refresh` | Daily 19:00 | `dbt run` + `dbt test` full project | toàn bộ |
 
 Tất cả DAG: `catchup=False`, task tuần tự (không parallel cùng nguồn API).
@@ -133,7 +133,7 @@ Không set `HNX_CRAWL_MAX_LIST_PAGES=500` trong env Airflow trừ khi cố ý ba
 
 **News:** ~5–15 phút (20 rpm).
 
-**BCTC weekly:** ~10–30 phút (10 trang HNX, 10 rpm).
+**BCTC quarterly:** ~10–30 phút (10 trang HNX, 10 rpm).
 
 **Gold full refresh:** phụ thuộc kích thước warehouse (~2–10 phút local).
 
@@ -188,7 +188,7 @@ docker/airflow/
     structured_daily.py
     structured_monthly.py
     news_daily.py
-    bctc_weekly.py
+    bctc_quarterly.py
     gold_full_refresh.py
   logs/
   plugins/

@@ -17,7 +17,7 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 | `structured_daily` | T2–T6 16:30 | `price,index_price,price_board` | `+mart_stock_daily +mart_price_board +mart_market_overview` |
 | `structured_monthly` | Ngày 1 hàng tháng 17:00 | `listing,company,financial_ratio` | `+mart_financial_summary +mart_company_profile` |
 | `news_daily` | Daily 06:00 | `news` | `+mart_stock_news_signal +fact_news_article` |
-| `bctc_weekly` | T7 10:00 | `bctc_pdf_meta` | `+mart_bctc_documents` |
+| `bctc_quarterly` | 15/02, 15/05, 15/08, 15/11 10:00 | `bctc_pdf_meta` | `+mart_bctc_documents` |
 | `gold_full_refresh` | Daily 19:00 | — | full project (`dbt run` + `dbt test`) |
 
 ---
@@ -197,7 +197,7 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 
 ### `mart_stock_daily` (table)
 - toàn bộ cột từ `fact_price_daily`
-- + `news_count`, `avg_sentiment_score`, `dominant_sentiment`
+- + news fields từ `mart_stock_news_signal`: `news_count`, `avg_sentiment_score`, `weighted_sentiment`, `news_signal`, `dominant_sentiment`, `top_articles`
 
 ### `mart_ticker_directory` (table)
 - `ticker`, `exchange`, `organ_name`, `en_organ_name`, `security_type`
@@ -229,16 +229,19 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 
 ### `stg_news` (ephemeral)
 - `article_id`, `source`
-- `ticker` (coalesce từ `ticker` hoặc `ticker_mentions[1]`)
+- `ticker` sau khi explode từ `ticker` và `ticker_mentions`
 - `ticker_mentions`, `title`, `summary`, `body_text`, `url`
 - `published_at`, `published_date`
 - `sentiment_score`, `sentiment_label`, `word_count`, `language`
+- `ticker_relevance`, `source_tier`
 
 ### `fact_news_article` (table)
+- Grain hiện tại: `article_id + ticker`
 - `article_id`, `ticker`, `ticker_mentions`
 - `title`, `summary`, `body_text`, `url`, `source`
 - `published_at`, `published_date`
 - `sentiment_score`, `sentiment_label`, `word_count`, `language`
+- `ticker_relevance`, `source_tier`
 
 ### `int_news_sentiment_daily` (table)
 - `ticker`, `published_date`
@@ -247,10 +250,21 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 - `dominant_sentiment`
 
 ### `mart_stock_news_daily` (table)
+
+> WARNING: Deprecated: giữ lại để backward-compat. API/UI chính đã chuyển sang
+> `mart_stock_news_signal`. Sẽ bỏ sau khi UI ổn định.
+
 - `ticker`, `published_date`
 - `news_count`, `avg_sentiment_score` (round)
 - `positive_count`, `negative_count`, `neutral_count`
 - `dominant_sentiment`
+
+### `mart_stock_news_signal` (table)
+- Grain hiện tại: `ticker + trading_date`
+- Map bài viết sang phiên giao dịch (`published_date` cuối tuần hoặc sau cutoff có thể chuyển sang phiên kế tiếp)
+- `news_count`, `avg_sentiment_score`, `weighted_sentiment`
+- `news_signal`: `buy_signal`, `sell_signal`, `neutral`
+- `dominant_sentiment`, `top_articles`
 
 ---
 
@@ -291,30 +305,9 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 
 ---
 
-# 4) Lineage → Endpoint Mapping
+# 4) Lineage -> Endpoint Mapping
 
-## 4.1 Giá & chỉ báo
-- `GET /prices/{symbol}` → `gold.mart_stock_daily`
-- `GET /indicators/{symbol}` → `gold.mart_stock_daily`
-
-## 4.2 Hồ sơ công ty
-- `GET /companies/{symbol}` → `gold.mart_company_profile`
-- `GET /financials/{symbol}` → `gold.stg_financial_ratio`
-
-## 4.3 Thị trường
-- `GET /market/overview` → `gold.mart_market_overview`
-
-## 4.4 News
-- `GET /news/articles` → `gold.fact_news_article`
-- `GET /news/{symbol}/articles` → `gold.fact_news_article`
-- `GET /news/{symbol}` → `gold.mart_stock_news_daily`
-- `GET /news/market` → `gold.fact_news_article`
-
-## 4.5 BCTC
-- `GET /bctc/documents` → `gold.mart_bctc_documents`
-- `GET /bctc/recent` → `gold.mart_bctc_documents`
-- `GET /bctc/{symbol}` → `gold.mart_bctc_documents`
-- `GET /bctc/{symbol}/file/{doc_id}` → lookup `gold.mart_bctc_documents.pdf_path`
+Xem Section 7 (Current Gold/API/UI Lineage) để biết mapping chính xác nhất.
 
 ---
 
@@ -356,7 +349,7 @@ close-only stock charts, no price-board API, or news joined only by
 |---|---|---|
 | `int_price_indicator` | `ticker + trading_date` | Return, MA, RSI, MACD, Bollinger, `volume_ma20`, `obv`. |
 | `fact_price_daily` | `ticker + trading_date` | OHLCV + indicators; base for `mart_stock_daily`. |
-| `mart_stock_daily` | `ticker + trading_date` | API `/prices/{symbol}` and `/indicators/{symbol}`; carries mapped news fields from `mart_stock_news_signal`. |
+| `mart_stock_daily` | `ticker + trading_date` | API `/prices/{symbol}` and `/indicators/{symbol}`; JOINs with `mart_stock_news_signal` to embed mapped news fields (`news_count`, `dominant_sentiment`, `weighted_sentiment`, `news_signal`, `top_articles`) into price/indicator output. |
 | `mart_market_overview` | `trading_date` | API `/market/overview`; optional `date`, otherwise latest session. |
 | `mart_price_board` | `symbol + trading_date` | API `/board/{symbol}` and `/board/{symbol}/foreign-flow`; filters by `trading_date`. |
 | `mart_financial_summary` | `ticker + period_type + period` | API `/financials/{symbol}`; wide financial ratios. Quarterly rows come from source data; annual rows are derived from the latest available quarter in each year when raw annual rows are absent. |
@@ -368,7 +361,7 @@ close-only stock charts, no price-board API, or news joined only by
 | `stg_news` | `article_id + ticker` | Explodes `ticker` plus `ticker_mentions`; adds `ticker_relevance`, `source_tier`. |
 | `fact_news_article` | `article_id + ticker` | Article-level API for `/news/articles` and `/news/{symbol}/articles`; includes title, summary, body text, URL, sentiment, relevance, and source tier. |
 | `int_news_sentiment_daily` | `ticker + published_date` | Legacy/simple aggregate kept for compatibility. |
-| `mart_stock_news_daily` | `ticker + published_date` | Legacy/simple daily aggregate. |
+| `mart_stock_news_daily` | `ticker + published_date` | Deprecated legacy/simple daily aggregate kept for backward compatibility; API/UI main flow uses `mart_stock_news_signal`. |
 | `mart_stock_news_signal` | `ticker + trading_date` | Main stock-detail news source. Maps articles to trading sessions, computes `avg_sentiment_score`, `weighted_sentiment`, `news_signal`, `dominant_sentiment`, and `top_articles`. |
 
 `mart_stock_news_signal.trading_date` can differ from article `published_date`
@@ -389,6 +382,7 @@ appropriate trading session.
 | Dashboard overview | `/market/overview?date=` | `mart_market_overview` | `trading_date` |
 | Stock price chart | `/prices/{symbol}?from=&to=` | `mart_stock_daily` | `trading_date` |
 | Stock indicators | `/indicators/{symbol}?from=&to=` | `mart_stock_daily` | `trading_date` |
+| Stock news inline (trong price chart) | `/prices/{symbol}` | `mart_stock_daily` (join `mart_stock_news_signal`) | `trading_date` |
 | Stock price board | `/board/{symbol}?from=&to=` | `mart_price_board` | `trading_date` |
 | Foreign flow | `/board/{symbol}/foreign-flow?from=&to=` | `mart_price_board` | `trading_date` |
 | Stock financials | `/financials/{symbol}?period_type=` | `mart_financial_summary` | `period`, `year`, `quarter` |

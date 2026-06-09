@@ -2,11 +2,12 @@
 
 Cập nhật: 2026-06-03
 
-Dự án xây dựng hệ thống Data Pipeline và ứng dụng tra cứu, phân tích thị
-trường chứng khoán Việt Nam đa nguồn. Kiến trúc hiện tại đi theo Medallion:
-Bronze lưu dữ liệu gần nguồn, Silver chuẩn hóa thành parquet sạch,
-PostgreSQL/TimescaleDB lưu warehouse, dbt build Gold marts, FastAPI phục vụ API
-read-only, và React/Vite hiển thị dashboard.
+Dự án xây dựng hệ thống Data Pipeline và ứng dụng tra cứu thị
+trường chứng khoán Việt Nam đa nguồn. Kiến trúc hiện tại là **Medallion Data
+Architecture** triển khai theo mô hình **batch ELT pipeline**: Bronze lưu dữ
+liệu gần nguồn, Silver chuẩn hóa thành parquet sạch, PostgreSQL/TimescaleDB lưu
+warehouse phân tích, dbt build Gold marts, FastAPI phục vụ API read-only, và
+React/Vite hiển thị **Financial Analytics Dashboard**.
 
 ```text
 Bronze raw parquet/PDF
@@ -16,6 +17,13 @@ Bronze raw parquet/PDF
   -> FastAPI read-only
   -> React dashboard
 ```
+
+Thuật ngữ chuẩn khi mô tả hệ thống:
+
+- **Medallion Data Architecture** cho luồng Bronze -> Silver -> Gold.
+- **Batch ELT pipeline** vì dữ liệu được ingest/transform/load theo lịch, không streaming realtime.
+- **Data Warehouse / Analytical Serving Layer** cho PostgreSQL + dbt Gold + FastAPI read-only.
+- **Không gọi đây là OLTP chính**: backend không có write endpoint, không phục vụ giao dịch nghiệp vụ.
 
 ## Trạng Thái Hiện Tại
 
@@ -74,7 +82,7 @@ chỉ khớp snapshot này sau `load-silver` + `dbt run` trên cùng bộ Silver
 | Path | Ghi chú |
 | --- | --- |
 | `Structure_Data/price_board/snapshot_at=*` | **1 partition** / run; mặc định full listing HOSE/HNX (batched, gộp 1 snapshot) |
-| `Unstructure_Data/news/{rss,html}/date=2026-06-03` | Hai kênh riêng; Silver gộp + dedupe |
+| `Unstructured_Data/news/{rss,html}/date=2026-06-03` | Hai kênh riêng; Silver gộp + dedupe |
 | `Semi_Structure_Data/bctc_annual_pdf_meta/.../date=2026-06-03` | Partition theo **ngày chạy job**, không theo ngày công bố HNX |
 
 ### Gold (PostgreSQL) — sau `dbt run`
@@ -95,7 +103,7 @@ stock-pipeline/
 |   `-- semi_structure_data/   # Crawl/download metadata BCTC PDF từ HNX
 |-- pipeline/silver/           # Bộ biến đổi Bronze -> Silver và CLI
 |-- warehouse/
-|   |-- ddl/schema.sql         # Schema PostgreSQL silver/gold
+|   |-- ddl/schema.sql         # DDL schema silver + một số legacy gold; Gold hiện tại do dbt quản lý
 |   |-- loader/                # Loader upsert Silver parquet -> PostgreSQL
 |   `-- scripts/               # Script thiết lập DB
 |-- transform/dbt/             # Mã nguồn dbt project
@@ -203,14 +211,14 @@ Chi tiết: [Structure_data_flow.md](Docs/Structure_data_flow.md) · [News_data_
 | `company` | Lấy snapshot company cho toàn bộ ticker tìm được từ listing universe | `structured_monthly`: refresh full HOSE/HNX 1 tháng 1 lần | `data-lake/raw/Structure_Data/company/snapshots/snapshot_date=<run_date>/company_overview.parquet` | `data-lake/silver/company/current/` -> `silver.company` -> `gold.dim_company`, `gold.mart_company_profile` |
 | `financial_ratio` | Lấy full ratio cho toàn bộ ticker HOSE/HNX từ listing universe | `structured_monthly`: refresh full HOSE/HNX 1 tháng 1 lần | `data-lake/raw/Structure_Data/financial_ratio/snapshot_date=<run_date>/<TICKER>.parquet` | `data-lake/silver/financial_ratio/period_type=<...>/year=<YYYY>/` -> `silver.financial_ratio` -> `gold.mart_financial_summary`, `gold.mart_company_profile` |
 | `price_board` | Notebook mặc định chỉ lấy snapshot hiện tại cho `watchlist50` | `structured_daily`: snapshot current cho `watchlist50` mỗi ngày | `data-lake/raw/Structure_Data/price_board/snapshot_at=<timestamp>/PRICE_BOARD_SNAPSHOT.parquet` | `data-lake/silver/price_board/trading_date=<YYYY-MM-DD>/` -> `silver.price_board` -> `gold.mart_price_board` |
-| `news` | Lấy bài trong 30 ngày gần nhất, nhưng ghi chung vào partition của **ngày chạy backfill** | `news_daily`: `days_back=1`, mỗi ngày một run partition mới | `data-lake/raw/Unstructure_Data/news/<rss|html>/date=<run_date>/PART-000.parquet` | `data-lake/silver/news/date=<run_date>/` -> `silver.news` -> `gold.fact_news_article`, `gold.mart_stock_news_signal` |
-| `bctc_pdf_meta` + PDF | Notebook hiện tại crawl 500 trang HNX gần nhất, tải metadata + PDF của các tài liệu đạt filter | `bctc_weekly`: quét lại top 10 trang gần nhất mỗi tuần, rồi upsert theo `doc_id` | `data-lake/raw/Semi_Structure_Data/bctc_annual_pdf_meta/source=hnx/date=<run_date>/PART-000.parquet` và `data-lake/raw/Semi_Structure_Data/bctc_annual_pdf/source=hnx/date=<run_date>/.../*.pdf` | `data-lake/silver/bctc_pdf_meta/date=<run_date>/` -> `silver.bctc_pdf_meta` -> `gold.mart_bctc_documents` |
+| `news` | Lấy bài trong 30 ngày gần nhất, nhưng ghi chung vào partition của **ngày chạy backfill** | `news_daily`: `days_back=1`, mỗi ngày một run partition mới | `data-lake/raw/Unstructured_Data/news/<rss|html>/date=<run_date>/PART-000.parquet` | `data-lake/silver/news/date=<run_date>/` -> `silver.news` -> `gold.fact_news_article`, `gold.mart_stock_news_signal` |
+| `bctc_pdf_meta` + PDF | Notebook hiện tại crawl 500 trang HNX gần nhất, tải metadata + PDF của các tài liệu đạt filter | `bctc_quarterly`: quét lại top 10 trang gần nhất mỗi quý, rồi upsert theo `doc_id` | `data-lake/raw/Semi_Structure_Data/bctc_annual_pdf_meta/source=hnx/date=<run_date>/PART-000.parquet` và `data-lake/raw/Semi_Structure_Data/bctc_annual_pdf/source=hnx/date=<run_date>/.../*.pdf` | `data-lake/silver/bctc_pdf_meta/date=<run_date>/` -> `silver.bctc_pdf_meta` -> `gold.mart_bctc_documents` |
 
 Ghi chú vận hành:
 
 - `price` và `index_price` là hai dataset structured có incremental thật theo `trading_date` + watermark.
 - `news` và `bctc_pdf_meta` partition theo **ngày chạy job**, không theo `published_at`.
-- `bctc_weekly` hiện là mô hình **rescan top 10 pages + upsert `doc_id`**, chưa phải crawl incremental theo ngày công bố HNX.
+- `bctc_quarterly` hiện là mô hình **rescan top 10 pages + upsert `doc_id`**, chưa phải crawl incremental theo ngày công bố HNX.
 
 ### 1. Ingestion Bronze
 
@@ -244,7 +252,7 @@ Metadata/tải PDF BCTC:
 @'
 from ingestion.semi_structure_data import SemiStructuredIngestionConfig, run_bctc_annual_pipeline
 
-# DAG weekly (mac dinh): 10 trang HNX tu trang 1
+# DAG quarterly (mac dinh): 10 trang HNX tu trang 1
 cfg = SemiStructuredIngestionConfig()
 # Backfill lan dau (hoac notebook BCTC_RUN_PROFILE=backfill):
 # cfg = SemiStructuredIngestionConfig(hnx_max_list_pages=500)
@@ -261,7 +269,7 @@ data-lake/raw/Structure_Data/listing/master/listing.parquet
 data-lake/raw/Structure_Data/company/snapshots/snapshot_date=<date>/company_overview.parquet
 data-lake/raw/Structure_Data/financial_ratio/snapshot_date=<timestamp>/<TICKER>.parquet
 data-lake/raw/Structure_Data/price_board/snapshot_at=<timestamp>/PRICE_BOARD_SNAPSHOT.parquet
-data-lake/raw/Unstructure_Data/news/<rss|html>/date=<YYYY-MM-DD>/PART-000.parquet
+data-lake/raw/Unstructured_Data/news/<rss|html>/date=<YYYY-MM-DD>/PART-000.parquet
 data-lake/raw/Semi_Structure_Data/bctc_annual_pdf_meta/source=hnx/date=<YYYY-MM-DD>/PART-000.parquet
 data-lake/raw/Semi_Structure_Data/bctc_annual_pdf/source=hnx/date=<YYYY-MM-DD>/ticker=<TICKER>/year=<YYYY>/<doc_id>.pdf
 ```
@@ -529,7 +537,7 @@ curl http://localhost:8000/bctc/AAV
 - Stock price chart renders `open`, `high`, `low`, and `close`; hover tooltip also shows `volume`.
 - Company profile no longer renders `charter_capital` in the stock UI because the current dataset does not provide reliable charter capital for display.
 - Financial tab reads `gold.mart_financial_summary`. `period_type=quarter` returns real quarterly rows; `period_type=annual` returns annual rows derived from the latest quarter available in each year when raw annual rows are absent.
-- Stock-detail news summary reads `gold.mart_stock_news_signal`. `avg_sentiment_score` is the simple average article sentiment in the mapped trading session; `weighted_sentiment` gives larger weight to title/summary/source-tier matches; `news_signal` is positive/negative/neutral from weighted thresholds.
+- Stock-detail news summary reads `gold.mart_stock_news_signal`. `avg_sentiment_score` is the simple average article sentiment in the mapped trading session; `weighted_sentiment` gives larger weight to title/summary/source-tier matches; `news_signal` is `buy_signal`/`sell_signal`/`neutral` from weighted thresholds; `sentiment_label` and `dominant_sentiment` use `positive`/`negative`/`neutral`.
 - Main news archive reads `gold.fact_news_article` and can preview full `body_text` only for articles where `body_text` exists.
 
 ### 7. Frontend React

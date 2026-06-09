@@ -16,6 +16,7 @@ __pycache__/
 transform/dbt/target/
 transform/dbt/logs/
 transform/dbt/.user.yml
+/docker/airflow/logs/.log
 
 # Frontend local artifacts
 node_modules/

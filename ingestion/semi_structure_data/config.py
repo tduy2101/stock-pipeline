@@ -13,7 +13,6 @@ class SemiStructuredIngestionConfig:
     )
     sources: list[str] = field(default_factory=lambda: ["hnx"])
     tickers: list[str] = field(default_factory=list)
-    incremental_window_days: int = 30
     rate_limit_rpm: int = 10
     api_retry_max_attempts: int = 4
     api_retry_base_delay_sec: float = 1.5
@@ -41,7 +40,7 @@ class SemiStructuredIngestionConfig:
     allow_en_docs_for_parse: bool = False
     # API cong bo HNX (neu co): uu tien field nay, khong thi bien moi truong HNX_DISCLOSURE_API_URL
     hnx_disclosure_api_url: str | None = None
-    # HNX list crawl: so trang POST (trang 1 = moi nhat). DAG weekly mac dinh 10; backfill notebook 500.
+    # HNX list crawl: so trang POST (trang 1 = moi nhat). DAG quarterly mac dinh 10; backfill notebook 500.
     hnx_max_list_pages: int = 10
 
     def __post_init__(self) -> None:

@@ -17,7 +17,7 @@ class SilverConfig:
     bronze_dir: str = "raw"
     silver_dir: str = "silver"
     structure_dir_name: str = "Structure_Data"
-    unstructure_dir_name: str = "Unstructure_Data"
+    unstructure_dir_name: str = "Unstructured_Data"
     semi_structure_dir_name: str = "Semi_Structure_Data"
     part_filename: str = "PART-000.parquet"
 

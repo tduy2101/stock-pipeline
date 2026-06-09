@@ -284,7 +284,7 @@ def ingest_news(**_: Any) -> str:
 
 
 def ingest_bctc(**_: Any) -> str:
-    """Bronze BCTC weekly (hnx_max_list_pages=10 default). Returns run_partition."""
+    """Bronze BCTC quarterly (hnx_max_list_pages=10 default). Returns run_partition."""
     _load_dotenv()
     from ingestion.semi_structure_data import (
         SemiStructuredIngestionConfig,

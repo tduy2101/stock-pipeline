@@ -580,7 +580,7 @@ dbt test --profiles-dir transform/dbt
 
 ### 9.2. Giải thích mô hình bảng Gold — `stg`, `fact`, `dim`, `mart`
 
-**Gold** là lớp analytics “sẵn sàng dùng”: dbt đọc `silver.*`, tính toán thêm, ghi ra schema **`gold`**. API/frontend **không** đọc Silver — chỉ đọc Gold (và trường hợp đặc biệt `gold.stg_financial_ratio` cho bảng chỉ số chi tiết).
+**Gold** là lớp analytics “sẵn sàng dùng”: dbt đọc `silver.*`, tính toán thêm, ghi ra schema **`gold`**. API/frontend **không** đọc Silver hay parquet trực tiếp — chỉ đọc các object Gold đã được dbt build, chủ yếu là `mart_*` và `fact_*`.
 
 Không phải mọi object trong `gold` đều là **mart**. Trong luồng structured, có **bốn vai trò**:
 
@@ -604,7 +604,7 @@ silver.*  →  stg_* (view)       chuẩn hóa / cast, gần nguồn
 
 - Ví dụ: `gold.stg_price`, `gold.stg_financial_ratio`.
 - **Không phải mart** — chỉ là lớp đọc từ `silver` + ép kiểu / đổi tên cột.
-- Dùng khi cần **chi tiết đầy đủ** (mọi `item_code` × `period` của financial ratio) → API `GET /financials/{symbol}`.
+- Dùng làm đầu vào cho intermediate/fact/mart. API hiện tại không đọc trực tiếp `stg_financial_ratio`; endpoint `GET /financials/{symbol}` đọc `gold.mart_financial_summary`.
 
 #### `int_*` — Intermediate (table)
 
@@ -645,6 +645,8 @@ silver.*  →  stg_* (view)       chuẩn hóa / cast, gần nguồn
 | **`mart_stock_daily`** | `ticker + trading_date` | = `fact_price_daily` + (tuỳ chọn) sentiment tin theo ngày | `/prices`, `/indicators` — biểu đồ |
 | **`mart_company_profile`** | `ticker` (1 dòng/mã) | Gộp `dim_company` + giá mới nhất + 52w + PE/PB/… | `/companies/{symbol}` |
 | **`mart_market_overview`** | `trading_date` (1 dòng/ngày) | Pivot chỉ số + breadth + top movers JSON | `/market/overview` |
+| **`mart_price_board`** | `symbol + trading_date` | Bảng giá bid/ask, spread, foreign flow | `/board/{symbol}`, `/board/{symbol}/foreign-flow` |
+| **`mart_financial_summary`** | `ticker + period_type + period` | Pivot financial ratio sang wide format | `/financials/{symbol}` |
 | **`mart_ticker_directory`** | `ticker` | Union mã từ price, company, news, BCTC + cờ `has_*` | **`GET /tickers`** |
 
 So sánh ngắn:
@@ -661,8 +663,8 @@ mart_company_profile  → hồ sơ + snapshot metrics kinh doanh → 1 request /
 
 | Object | Ghi chú |
 |---|---|
-| `stg_financial_ratio` | Vừa feed API chi tiết (`/financials`), vừa pivot vào `mart_company_profile` (PE, PB, …) |
-| `stg_price_board` | Có view Gold, **chưa** có fact/mart → **chưa có UI/API** |
+| `stg_financial_ratio` | Feed `mart_financial_summary` và `mart_company_profile` (PE, PB, …); API đọc `mart_financial_summary` |
+| `stg_price_board` | Feed `mart_price_board`; đã có API `/board/{symbol}` và UI tab Bảng giá |
 | `int_news_sentiment_daily` | Intermediate luồng news; join vào `mart_stock_daily` (không phải mart structured thuần) |
 
 Chi tiết từng model (SQL, cột): các mục **§9.4–§9.8** bên dưới. Mapping API/UI: **§10**.
@@ -691,9 +693,9 @@ dbt khai báo `source('silver', …)` cho 6 bảng structured:
 | `stg_financial_ratio` | `silver.financial_ratio` | Cast `value` double precision |
 | `stg_price_board` | `silver.price_board` | Cast giá/khối lượng |
 
-**Lưu ý:** `stg_price_board` **không** được ref bởi mart/fact nào — chỉ tồn tại view `gold.stg_price_board` phục vụ ad-hoc/SQL. API hiện **không** expose price board.
+**Lưu ý:** `stg_price_board` hiện feed `gold.mart_price_board`, phục vụ API `/board/{symbol}` và tab Bảng giá/khối ngoại trên UI.
 
-`stg_financial_ratio` được dùng trực tiếp bởi API (`GET /financials/{symbol}` → `gold.stg_financial_ratio`) và gián tiếp trong `mart_company_profile` (PE/PB/EPS/ROE/ROA).
+`stg_financial_ratio` feed `gold.mart_financial_summary` cho API `GET /financials/{symbol}` và gián tiếp feed `mart_company_profile` (PE/PB/EPS/ROE/ROA).
 
 ### 9.5. Intermediate (structured)
 
@@ -814,7 +816,7 @@ Tất cả relation vật lý nằm schema **`gold`** (view staging + table inte
 | Đối tượng Gold | Loại | Grain | API / UI |
 |---|---|---|---|
 | `stg_price`, `stg_index_price`, … | view | — | Không gọi trực tiếp |
-| `stg_financial_ratio` | view | `ticker + item_code + period` | `GET /financials/{symbol}` |
+| `stg_financial_ratio` | view | `ticker + item_code + period` | Feed `mart_financial_summary` và `mart_company_profile` |
 | `int_price_indicator` | table | `ticker + trading_date` | Qua `mart_stock_daily` / `fact_price_daily` |
 | `fact_price_daily` | table | `ticker + trading_date` | Nền cho marts (không expose API) |
 | `fact_index_daily` | table | `index_code + trading_date` | Qua `mart_market_overview` |
@@ -824,9 +826,9 @@ Tất cả relation vật lý nằm schema **`gold`** (view staging + table inte
 | **`mart_stock_daily`** | table | `ticker + trading_date` | `GET /prices/{symbol}`, `GET /indicators/{symbol}` |
 | **`mart_company_profile`** | table | `ticker` | `GET /companies/{symbol}` |
 | **`mart_market_overview`** | table | `trading_date` | `GET /market/overview` |
+| **`mart_price_board`** | table | `symbol + trading_date` | `GET /board/{symbol}`, `GET /board/{symbol}/foreign-flow` |
+| **`mart_financial_summary`** | table | `ticker + period_type + period` | `GET /financials/{symbol}` |
 | **`mart_ticker_directory`** | table | `ticker` | **`GET /tickers`** (search universe + `has_news`, `has_bctc`) |
-
-**Chưa có mart Gold cho:** `price_board` (chỉ `silver.price_board` + `gold.stg_price_board`).
 
 **dbt tests** (`schema.yml`): `not_null`, `unique`, `unique_combination_of_columns` trên grain staging/marts; `mart_stock_daily.ticker` có `relationships` → `dim_security.symbol`.
 
@@ -1015,7 +1017,7 @@ Tab **Tin tức** và **BCTC** trên cùng trang dùng luồng news/PDF (không 
 | `price` | `mart_stock_daily` | `/prices`, `/indicators` | Biểu đồ giá, chỉ báo kỹ thuật |
 | `index` | `mart_market_overview` | `/market/overview` | Index cards, breadth (gián tiếp từ price agg) |
 | `listing` + `company` | `mart_company_profile`, `dim_security` | `/companies`, `/tickers` | Header mã, tab Tổng quan, search |
-| `financial_ratio` | `stg_financial_ratio` | `/financials` | Tab Tài chính; PE/PB trên Tổng quan |
+| `financial_ratio` | `mart_financial_summary` | `/financials` | Tab Tài chính; PE/PB trên Tổng quan |
 | `price_board` | `/board/{symbol}` | `mart_price_board` | Bid/ask, foreign flow |
 
 **Điều kiện để UI đầy đủ:** PostgreSQL có dữ liệu sau `load-silver` + `dbt run`; API và frontend cùng `DATABASE_URL` / proxy. **Search ticker** đọc `mart_ticker_directory` (union mã có price/news/BCTC/profile). **Price board tab** dùng `mart_price_board` (đã có API). Toàn bộ `silver.listing` (~1,500 mã) không tự hiện trên search nếu chưa có dữ liệu price/news/BCTC cho mã đó.

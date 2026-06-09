@@ -69,7 +69,7 @@ class NewsIngestionConfig:
             Path(__file__).resolve().parents[2]
             / "data-lake"
             / "raw"
-            / "Unstructure_Data"
+            / "Unstructured_Data"
         )
 
     @property

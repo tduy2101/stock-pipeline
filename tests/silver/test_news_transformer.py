@@ -165,7 +165,7 @@ def _write_bronze(tmp_path: Path, run_partition: str) -> SilverConfig:
     rss_dir = (
         root
         / "raw"
-        / "Unstructure_Data"
+        / "Unstructured_Data"
         / "news"
         / "rss"
         / f"date={run_partition}"
@@ -173,7 +173,7 @@ def _write_bronze(tmp_path: Path, run_partition: str) -> SilverConfig:
     html_dir = (
         root
         / "raw"
-        / "Unstructure_Data"
+        / "Unstructured_Data"
         / "news"
         / "html"
         / f"date={run_partition}"
