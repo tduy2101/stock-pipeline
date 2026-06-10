@@ -36,6 +36,7 @@ DATASET_CONFIG: dict[str, dict[str, Any]] = {
         "glob": "data-lake/silver/price/**/*.parquet",
         "table": "silver.price",
         "key_cols": ["ticker", "trading_date"],
+        "latest_partition_key": "trading_date",
         "columns": [
             "ticker",
             "trading_date",
@@ -62,6 +63,7 @@ DATASET_CONFIG: dict[str, dict[str, Any]] = {
         "glob": "data-lake/silver/index_price/**/*.parquet",
         "table": "silver.index_price",
         "key_cols": ["index_code", "trading_date"],
+        "latest_partition_key": "trading_date",
         "columns": [
             "index_code",
             "trading_date",
@@ -203,6 +205,7 @@ DATASET_CONFIG: dict[str, dict[str, Any]] = {
         "glob": "data-lake/silver/price_board/**/*.parquet",
         "table": "silver.price_board",
         "key_cols": ["symbol", "trading_date"],
+        "latest_partition_key": "trading_date",
         "columns": [
             "symbol",
             "trading_date",
@@ -724,8 +727,53 @@ def write_audit(
     conn.commit()
 
 
-def _read_parquet_files(pattern: str) -> tuple[pd.DataFrame, list[str]]:
+def _partition_value(file_path: str, partition_key: str) -> str | None:
+    prefix = f"{partition_key}="
+    for part in Path(file_path).parts:
+        if part.startswith(prefix):
+            return part[len(prefix):]
+    return None
+
+
+def _filter_latest_partitions(
+    files: list[str],
+    *,
+    partition_key: str | None,
+    latest_partitions: int | None,
+) -> list[str]:
+    if not partition_key or not latest_partitions or latest_partitions <= 0:
+        return files
+
+    values = sorted(
+        {
+            value
+            for file_path in files
+            if (value := _partition_value(file_path, partition_key))
+        }
+    )
+    if not values:
+        return files
+
+    selected = set(values[-latest_partitions:])
+    return [
+        file_path
+        for file_path in files
+        if _partition_value(file_path, partition_key) in selected
+    ]
+
+
+def _read_parquet_files(
+    pattern: str,
+    *,
+    partition_key: str | None = None,
+    latest_partitions: int | None = None,
+) -> tuple[pd.DataFrame, list[str]]:
     files = sorted(glob.glob(pattern, recursive=True))
+    files = _filter_latest_partitions(
+        files,
+        partition_key=partition_key,
+        latest_partitions=latest_partitions,
+    )
     if not files:
         return pd.DataFrame(), []
     frames = [pd.read_parquet(file) for file in files]
@@ -741,7 +789,12 @@ def _run_partition_for_audit(df: pd.DataFrame) -> str | None:
     return max(values)
 
 
-def load_dataset(conn, dataset: str) -> bool:
+def load_dataset(
+    conn,
+    dataset: str,
+    *,
+    latest_partitions: int | None = None,
+) -> bool:
     if dataset not in DATASET_CONFIG:
         raise ValueError(f"Unsupported dataset: {dataset}")
 
@@ -750,11 +803,21 @@ def load_dataset(conn, dataset: str) -> bool:
     run_partition: str | None = None
 
     try:
-        raw_df, files = _read_parquet_files(cfg["glob"])
+        raw_df, files = _read_parquet_files(
+            cfg["glob"],
+            partition_key=cfg.get("latest_partition_key"),
+            latest_partitions=latest_partitions,
+        )
         if not files:
             raise FileNotFoundError(f"No parquet files found for {dataset}: {cfg['glob']}")
 
-        LOGGER.info("[%s] Read %s rows from %s parquet files", dataset, len(raw_df), len(files))
+        LOGGER.info(
+            "[%s] Read %s rows from %s parquet files%s",
+            dataset,
+            len(raw_df),
+            len(files),
+            f" (latest_partitions={latest_partitions})" if latest_partitions else "",
+        )
         prepared = prepare_dataframe(raw_df, dataset)
         run_partition = _run_partition_for_audit(prepared)
         result = upsert_table(

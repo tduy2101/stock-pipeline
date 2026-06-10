@@ -1,4 +1,12 @@
-{{ config(materialized='table') }}
+{{
+  config(
+    materialized='table',
+    indexes=[
+      {'columns': ['ticker', 'trading_date'], 'type': 'btree', 'unique': true},
+      {'columns': ['trading_date'], 'type': 'btree'}
+    ]
+  )
+}}
 
 select
   fpd.*,

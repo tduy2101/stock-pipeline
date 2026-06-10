@@ -355,7 +355,11 @@ python -m warehouse.loader.cli load-silver --dataset price
 python -m warehouse.loader.cli load-silver --dataset news
 python -m warehouse.loader.cli load-silver --dataset bctc_pdf_meta
 python -m warehouse.loader.cli load-silver --dataset price,index_price,news
+# Daily incremental (Airflow structured_daily): chỉ partition mới nhất
+python -m warehouse.loader.cli load-silver --dataset price,index_price,price_board --latest-partitions 7
 ```
+
+DAG `structured_daily` dùng `--latest-partitions 7` cho `price/index_price/price_board`. Backfill hoặc rebuild full history chạy thủ công **không** dùng flag này.
 
 Thứ tự loader hiện tại khi `all`:
 

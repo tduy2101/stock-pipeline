@@ -42,9 +42,9 @@ with DAG(
 
     **Silver:** price → index_price → price_board.
 
-    **Load:** ``price,index_price,price_board`` → ``silver.*``
+    **Load:** ``price,index_price,price_board`` → ``silver.*`` (``latest_partitions=7``)
 
-    **dbt:** ``+mart_stock_daily +mart_price_board +mart_market_overview``
+    **dbt:** explicit subset ``stg_price … mart_market_overview`` (see ``DBT_STRUCTURED_SELECT``)
     (``mart_stock_daily`` joins ``mart_stock_news_signal`` from prior ``news_daily`` runs;
     listing dim & company profile refreshed by ``structured_monthly``).
 
@@ -76,6 +76,7 @@ with DAG(
         python_callable=load_silver,
         op_kwargs={
             "datasets": "price,index_price,price_board",
+            "latest_partitions": 7,
         },
     )
 

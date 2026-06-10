@@ -1,6 +1,6 @@
 # DBT Outputs & Lineage (Silver → Gold)
 
-> Cập nhật: 2026-06-06
+> Cập nhật: 2026-06-10
 
 Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **Silver (PostgreSQL)** → **Gold (dbt)**, kèm **lineage** đến các endpoint API/UI.
 
@@ -14,7 +14,7 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 
 | DAG | Schedule (ICT) | Silver load | dbt `--select` |
 |---|---|---|---|
-| `structured_daily` | T2–T6 16:30 | `price,index_price,price_board` | `+mart_stock_daily +mart_price_board +mart_market_overview` |
+| `structured_daily` | T2–T6 16:30 | `price,index_price,price_board` (`--latest-partitions 7`) | `stg_price stg_index_price stg_price_board int_price_indicator fact_price_daily fact_index_daily fact_news_article mart_stock_news_signal mart_stock_daily mart_price_board mart_market_overview` |
 | `structured_monthly` | Ngày 1 hàng tháng 17:00 | `listing,company,financial_ratio` | `+mart_financial_summary +mart_company_profile` |
 | `news_daily` | Daily 06:00 | `news` | `+mart_stock_news_signal +fact_news_article` |
 | `bctc_quarterly` | 15/02, 15/05, 15/08, 15/11 10:00 | `bctc_pdf_meta` | `+mart_bctc_documents` |
@@ -181,7 +181,8 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 - `hnx_close`, `hnx_return`
 - `total_market_value`, `total_volume`
 - `advances`, `declines`, `unchanged`
-- `top_gainers` (json), `top_losers` (json)
+- `top_gainers` (json), `top_losers` (json) — top 5 theo `daily_return`, tính bằng `row_number()` (không correlated subquery)
+- Index: `(trading_date)` unique
 
 ### `stg_price_board` (view)
 - `symbol`, `trading_date`, `exchange`
@@ -347,10 +348,10 @@ close-only stock charts, no price-board API, or news joined only by
 
 | Model | Grain | Current use |
 |---|---|---|
-| `int_price_indicator` | `ticker + trading_date` | Return, MA, RSI, MACD, Bollinger, `volume_ma20`, `obv`. |
-| `fact_price_daily` | `ticker + trading_date` | OHLCV + indicators; base for `mart_stock_daily`. |
-| `mart_stock_daily` | `ticker + trading_date` | API `/prices/{symbol}` and `/indicators/{symbol}`; JOINs with `mart_stock_news_signal` to embed mapped news fields (`news_count`, `dominant_sentiment`, `weighted_sentiment`, `news_signal`, `top_articles`) into price/indicator output. |
-| `mart_market_overview` | `trading_date` | API `/market/overview`; optional `date`, otherwise latest session. |
+| `int_price_indicator` | `ticker + trading_date` | Return, MA, RSI, MACD, Bollinger, `volume_ma20`, `obv`. Index `(ticker, trading_date)`. |
+| `fact_price_daily` | `ticker + trading_date` | OHLCV + indicators; base for `mart_stock_daily`. Index `(ticker, trading_date)`, `(trading_date)`, `(trading_date, daily_return)`. |
+| `mart_stock_daily` | `ticker + trading_date` | API `/prices/{symbol}` and `/indicators/{symbol}`; JOINs with `mart_stock_news_signal` to embed mapped news fields (`news_count`, `dominant_sentiment`, `weighted_sentiment`, `news_signal`, `top_articles`) into price/indicator output. Index `(ticker, trading_date)`, `(trading_date)`. |
+| `mart_market_overview` | `trading_date` | API `/market/overview`; optional `date`, otherwise latest session. Top movers via window ranking. |
 | `mart_price_board` | `symbol + trading_date` | API `/board/{symbol}` and `/board/{symbol}/foreign-flow`; filters by `trading_date`. |
 | `mart_financial_summary` | `ticker + period_type + period` | API `/financials/{symbol}`; wide financial ratios. Quarterly rows come from source data; annual rows are derived from the latest available quarter in each year when raw annual rows are absent. |
 

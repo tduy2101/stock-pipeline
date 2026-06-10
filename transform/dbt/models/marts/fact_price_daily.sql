@@ -1,4 +1,13 @@
-{{ config(materialized='table') }}
+{{
+  config(
+    materialized='table',
+    indexes=[
+      {'columns': ['ticker', 'trading_date'], 'type': 'btree', 'unique': true},
+      {'columns': ['trading_date'], 'type': 'btree'},
+      {'columns': ['trading_date', 'daily_return'], 'type': 'btree'}
+    ]
+  )
+}}
 
 select
   p.ticker,

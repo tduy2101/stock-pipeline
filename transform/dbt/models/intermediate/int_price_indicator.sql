@@ -1,4 +1,11 @@
-{{ config(materialized='table') }}
+{{
+  config(
+    materialized='table',
+    indexes=[
+      {'columns': ['ticker', 'trading_date'], 'type': 'btree', 'unique': true}
+    ]
+  )
+}}
 
 /*
 RSI: Cutler's method (SMA-based rolling avg, not Wilder's EMA).

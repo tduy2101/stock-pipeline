@@ -30,7 +30,10 @@ DBT_PROFILES_DIR = "transform/dbt"
 
 # dbt subset selectors aligned with transform/dbt model refs (see Docs/dbt_outputs_and_lineage.md)
 DBT_STRUCTURED_SELECT = (
-    "+mart_stock_daily +mart_price_board +mart_market_overview"
+    "stg_price stg_index_price stg_price_board "
+    "int_price_indicator fact_price_daily fact_index_daily "
+    "fact_news_article mart_stock_news_signal "
+    "mart_stock_daily mart_price_board mart_market_overview"
 )
 DBT_NEWS_SELECT = "+mart_stock_news_signal +fact_news_article"
 DBT_FINANCIAL_RATIO_SELECT = "+mart_financial_summary +mart_company_profile"
@@ -381,22 +384,27 @@ def silver_bctc_from_xcom(**context: Any) -> None:
     silver_dataset("bctc_pdf_meta", run_partition=run_partition)
 
 
-def load_silver(datasets: str | Iterable[str]) -> None:
+def load_silver(
+    datasets: str | Iterable[str],
+    *,
+    latest_partitions: int | None = None,
+) -> None:
     """Load silver parquet into PostgreSQL (warehouse.loader.cli accepts comma list)."""
     if isinstance(datasets, str):
         dataset_arg = datasets
     else:
         dataset_arg = ",".join(datasets)
-    run_subprocess(
-        [
-            sys.executable,
-            "-m",
-            "warehouse.loader.cli",
-            "load-silver",
-            "--dataset",
-            dataset_arg,
-        ]
-    )
+    cmd = [
+        sys.executable,
+        "-m",
+        "warehouse.loader.cli",
+        "load-silver",
+        "--dataset",
+        dataset_arg,
+    ]
+    if latest_partitions is not None:
+        cmd.extend(["--latest-partitions", str(latest_partitions)])
+    run_subprocess(cmd)
 
 
 def dbt_select(selectors: str | Iterable[str], *, do_test: bool = False) -> None:

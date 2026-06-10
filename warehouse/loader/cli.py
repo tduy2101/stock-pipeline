@@ -65,6 +65,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
         help="Dataset to load: all | price | news | price,index_price | listing,company",
     )
+    load_parser.add_argument(
+        "--latest-partitions",
+        type=int,
+        default=None,
+        help=(
+            "Load only the latest N filesystem partitions for datasets that support it "
+            "(currently price, index_price, price_board). Omit for full load."
+        ),
+    )
     return parser
 
 
@@ -79,7 +88,11 @@ def cmd_load_silver(args: argparse.Namespace) -> int:
     conn = get_connection()
     try:
         for dataset in datasets:
-            if not load_dataset(conn, dataset):
+            if not load_dataset(
+                conn,
+                dataset,
+                latest_partitions=args.latest_partitions,
+            ):
                 failed.append(dataset)
     finally:
         conn.close()

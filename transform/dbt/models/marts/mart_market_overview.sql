@@ -1,4 +1,11 @@
-{{ config(materialized='table') }}
+{{
+  config(
+    materialized='table',
+    indexes=[
+      {'columns': ['trading_date'], 'type': 'btree', 'unique': true}
+    ]
+  )
+}}
 
 with index_returns as (
   select
@@ -54,45 +61,49 @@ price_agg as (
 
 top_movers as (
   select
-    f1.trading_date,
+    trading_date,
     coalesce(
-      (
-        select json_agg(t)
-        from (
-          select
-            f2.ticker,
-            f2.close,
-            round((f2.daily_return * 100)::numeric, 2) as percent_change
-          from {{ ref('fact_price_daily') }} as f2
-          where f2.trading_date = f1.trading_date
-            and f2.daily_return is not null
-          order by f2.daily_return desc
-          limit 5
-        ) as t
-      ),
+      json_agg(
+        json_build_object(
+          'ticker', ticker,
+          'close', close,
+          'percent_change', round((daily_return * 100)::numeric, 2)
+        )
+        order by gain_rank
+      ) filter (where gain_rank <= 5),
       '[]'::json
     ) as top_gainers,
     coalesce(
-      (
-        select json_agg(t)
-        from (
-          select
-            f2.ticker,
-            f2.close,
-            round((f2.daily_return * 100)::numeric, 2) as percent_change
-          from {{ ref('fact_price_daily') }} as f2
-          where f2.trading_date = f1.trading_date
-            and f2.daily_return is not null
-          order by f2.daily_return asc
-          limit 5
-        ) as t
-      ),
+      json_agg(
+        json_build_object(
+          'ticker', ticker,
+          'close', close,
+          'percent_change', round((daily_return * 100)::numeric, 2)
+        )
+        order by loss_rank
+      ) filter (where loss_rank <= 5),
       '[]'::json
     ) as top_losers
   from (
-    select distinct trading_date
+    select
+      trading_date,
+      ticker,
+      close,
+      daily_return,
+      row_number() over (
+        partition by trading_date
+        order by daily_return desc nulls last
+      ) as gain_rank,
+      row_number() over (
+        partition by trading_date
+        order by daily_return asc nulls last
+      ) as loss_rank
     from {{ ref('fact_price_daily') }}
-  ) as f1
+    where daily_return is not null
+  ) as ranked
+  where gain_rank <= 5
+     or loss_rank <= 5
+  group by trading_date
 )
 
 select
