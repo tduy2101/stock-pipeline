@@ -1,6 +1,6 @@
 # Luồng dữ liệu tin tức (News)
 
-Cập nhật: 2026-06-03
+Cập nhật: 2026-06-11
 
 Tài liệu mô tả luồng **tin tức phi cấu trúc** từ crawl đến PostgreSQL:
 
@@ -13,7 +13,7 @@ Tài liệu mô tả luồng **tin tức phi cấu trúc** từ crawl đến Pos
 | Bronze | `ingestion/unstructured_data/`, `ingest_news.ipynb` | `data-lake/raw/Unstructured_Data/news/` |
 | Silver | `pipeline/silver/news_transformer.py`, `news_validate.py` | `data-lake/silver/news/date=*/` |
 | Warehouse | `warehouse/loader/silver_loader.py`, `warehouse/ddl/schema.sql` | `silver.news`, `silver.load_audit` |
-| Gold (dbt) | `stg_news`, `fact_news_article`, `int_news_sentiment_daily`, `mart_stock_news_signal`, `mart_stock_news_daily` | Schema `gold` |
+| Gold (dbt) | `stg_news`, `fact_news_article`, `mart_stock_news_signal` (+ `int_news_sentiment_daily`, `mart_stock_news_daily` deprecated) | Schema `gold` |
 | Note | `mart_stock_news_signal` là mart chính cho stock-detail; `mart_stock_news_daily` chỉ còn backward-compat | Current API/UI |
 | API / UI | `news.py`, `NewsPanel.tsx`, `MarketNewsFeed.tsx` | **Từng bài** + sentiment ngày + tin thị trường |
 
@@ -599,26 +599,27 @@ sources:
 
 File: `models/staging/stg_news.sql`
 
-- Giữ mọi bài có `published_date`, `article_id`, `title` (không bắt buộc `ticker` gốc từ Silver).
-- **`ticker` suy ra:** `coalesce(ticker, ticker_mentions[1])` — dùng cho aggregate; có thể vẫn NULL nếu không match mã nào.
+- Giữ mọi bài có `published_date`, `article_id`, `title`.
+- **Explode ticker:** gộp `ticker` + `ticker_mentions` → `unnest` — mỗi `(article_id, ticker)` là một dòng downstream.
+- Suy ra **`ticker_relevance`** (`title` > `summary` > `body`) và **`source_tier`** (Vietstock/CafeF/khác) phục vụ weighted sentiment.
 - **`body_text`** vẫn đi vào `fact_news_article` (API trả summary/body).
 
 | Đặc điểm | Chi tiết |
 |---|---|
 | Materialization | **`ephemeral`** — không tạo bảng `gold.stg_news` |
-| Lọc | Chỉ bỏ bài thiếu ngày đăng / `article_id` / `title` |
-| Grain | **`article_id`** (1 dòng / bài) |
+| Lọc | Chỉ bỏ bài thiếu ngày đăng / `article_id` / `title`; bài không match mã nào không vào explode |
+| Grain | **`article_id + ticker`** (một bài nhắc nhiều mã → nhiều dòng) |
 | Sentiment | Từ Silver (`keyword_v1`), Gold không tính lại |
 
-**dbt tests:** `article_id` not_null + unique; `published_date` not_null.
+**dbt tests:** `article_id` + `ticker` not_null; unique composite `(article_id, ticker)`; `published_date` not_null.
 
 ### 10.3b. Mart bài báo — `fact_news_article` (table)
 
-File: `models/marts/fact_news_article.sql` — pass-through `stg_news` (title, summary, `body_text`, url, sentiment, …).
+File: `models/marts/fact_news_article.sql` — pass-through `stg_news` (title, summary, `body_text`, url, sentiment, `ticker_relevance`, `source_tier`, …).
 
 | Object | Grain | API |
 |---|---|---|
-| **`gold.fact_news_article`** | `article_id` | `GET /news/{symbol}/articles`, `GET /news/market` |
+| **`gold.fact_news_article`** | `article_id + ticker` | `GET /news/articles`, `GET /news/{symbol}/articles`, `GET /news/market` |
 
 Đây là nguồn **tin đầy đủ từng bài** (không gom ngày). Aggregate ngày legacy vẫn ở `mart_stock_news_daily` (deprecated); API/UI chính dùng `mart_stock_news_signal`.
 
@@ -704,8 +705,9 @@ flowchart TB
   sn --> stg
   stg --> int
   stg --> fna[fact_news_article]
-  int --> msn
-  int --> msd
+  int --> msnd[mart_stock_news_daily deprecated]
+  fna --> msn
+  msn --> msd
   fpd --> msd
 ```
 
@@ -715,11 +717,12 @@ Tin từng bài: **`gold.fact_news_article`**; ad-hoc sâu hơn: `silver.news` (
 
 | Object | Loại | Grain | Nội dung |
 |---|---|---|---|
-| `stg_news` | ephemeral | `article_id` | Bài có title + published_date |
-| **`fact_news_article`** | table | `article_id` | **Danh sách bài đầy đủ** cho API articles |
-| `int_news_sentiment_daily` | table | `ticker + published_date` | Aggregate (chỉ bài có ticker resolve) |
-| **`mart_stock_news_daily`** | table | `ticker + published_date` | WARNING: Deprecated legacy sentiment theo ngày; API/UI chính dùng `mart_stock_news_signal` |
-| `mart_stock_daily` (cột news) | table | `ticker + trading_date` | Tin gắn ngày giao dịch |
+| `stg_news` | ephemeral | `article_id + ticker` | Explode `ticker_mentions`; thêm `ticker_relevance`, `source_tier` |
+| **`fact_news_article`** | table | `article_id + ticker` | **Danh sách bài** cho API articles/archive |
+| **`mart_stock_news_signal`** | table | `ticker + trading_date` | Signal theo phiên GD; API `/news/{symbol}`, `/news/{symbol}/signal` |
+| `int_news_sentiment_daily` | table | `ticker + published_date` | Aggregate legacy (feed `mart_stock_news_daily`) |
+| **`mart_stock_news_daily`** | table | `ticker + published_date` | WARNING: Deprecated; không còn là nguồn API/UI chính |
+| `mart_stock_daily` (cột news) | incremental | `ticker + trading_date` | Join `mart_stock_news_signal` vào giá/chỉ báo |
 
 **Snapshot workspace (2026-06-03):**
 
@@ -745,16 +748,12 @@ Router: `backend/routers/news.py` — prefix `/news`, tag `news`.
 | `GET /news/{symbol}` | `gold.mart_stock_news_signal` | Weighted signal theo phiên giao dịch |
 | `GET /news/market` | `gold.fact_news_article` | Top bài thị trường — dashboard `MarketNewsFeed` |
 
-**Response model** (`backend/schemas/news.py` → `NewsDailyRow`):
+**Response models** (`backend/schemas/news.py`):
 
-| Field | Kiểu |
-|---|---|
-| `ticker` | str |
-| `published_date` | date |
-| `news_count` | int \| null |
-| `avg_sentiment_score` | float \| null |
-| `positive_count`, `negative_count`, `neutral_count` | int \| null |
-| `dominant_sentiment` | str \| null (`positive` / `negative` / `neutral`) |
+| Endpoint | Schema | Ghi chú |
+|---|---|---|
+| `GET /news/{symbol}`, `GET /news/{symbol}/signal` | `NewsSignalRow` / `NewsSignalSummary` | `trading_date`, `weighted_sentiment`, `news_signal`, `top_articles` |
+| `GET /news/articles`, `GET /news/{symbol}/articles` | `NewsArticleRow` | `published_date`, `title`, `summary`, `body_text`, `ticker_relevance`, `source_tier` |
 
 Backend **chỉ đọc schema `gold`**, không đọc `silver.news` hay parquet.
 
@@ -886,11 +885,11 @@ Thứ tự: **Bronze → Silver files → load `silver.news` → `dbt run` → A
 | Tình huống | Gợi ý |
 |---|---|
 | Lần đầu / backfill | Bronze `days_back=30`; Silver từng `run_partition` hoặc nhiều ngày; load một lần; `dbt run` |
-| Hàng ngày | Bronze `days_back=1` → Silver → load → `dbt run` (incremental PG + rebuild Gold tables) |
+| Hàng ngày | Bronze `days_back=1` → Silver → load → `dbt run --select +mart_stock_news_signal +fact_news_article`; Gold structured từ `structured_daily` / `gold_full_refresh` |
 | `mart_stock_news_daily` ít dòng | Bình thường: filter `ticker is not null` + aggregate; tăng match ticker ở Bronze/Silver |
 | Tin không hiện theo mã | Bài không nhắc mã đó trong `ticker`/`ticker_mentions`; thử `/news/market` |
 | Có silver, không có fact | Chưa `dbt run --select fact_news_article` |
-| `mart_stock_daily` thiếu sentiment | Chưa có tin cùng ngày giao dịch; hoặc chưa join `int_news_sentiment_daily` |
+| `mart_stock_daily` thiếu sentiment | Chưa có tin cùng ngày giao dịch; hoặc chưa chạy `news_daily` / `mart_stock_news_signal` |
 | Rerun Bronze cùng ngày | Silver + load + `dbt run` lại |
 | Lỗi unique `url` khi load | Hai `article_id` cùng URL — sửa upstream |
 | Giảm tải site | Hạ `NEWS_RATE_LIMIT_RPM`, cap feed/HTML |
@@ -912,6 +911,7 @@ Thứ tự: **Bronze → Silver files → load `silver.news` → `dbt run` → A
 
 ### 15.2. Model mới: `mart_stock_news_signal`
 
+- **Nguồn:** `fact_news_article` (sau explode `stg_news`)
 - **Grain:** `ticker + trading_date` (phiên giao dịch)
 - **Mapping cuối tuần:** Tin thứ 7/CN → phiên thứ 2; tin sau 14:30 → phiên kế tiếp
 - **weighted_sentiment:** Có trọng số theo relevance (3/2/1), source tier (1.5/1.2/1.0), time-decay (half-life 48h)

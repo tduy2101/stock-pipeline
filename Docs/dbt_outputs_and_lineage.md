@@ -1,6 +1,6 @@
 # DBT Outputs & Lineage (Silver → Gold)
 
-> Cập nhật: 2026-06-10
+> Cập nhật: 2026-06-11
 
 Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **Silver (PostgreSQL)** → **Gold (dbt)**, kèm **lineage** đến các endpoint API/UI.
 
@@ -14,11 +14,11 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 
 | DAG | Schedule (ICT) | Silver load | dbt `--select` |
 |---|---|---|---|
-| `structured_daily` | T2–T6 16:30 | `price,index_price,price_board` (`--latest-partitions 7`) | `stg_price stg_index_price stg_price_board int_price_indicator fact_price_daily fact_index_daily fact_news_article mart_stock_news_signal mart_stock_daily mart_price_board mart_market_overview` |
+| `structured_daily` | T2–T6 16:30 | `price,index_price,price_board` (`--latest-partitions 7`) | `fact_index_daily mart_price_board int_price_indicator fact_price_daily mart_stock_daily mart_market_overview` (incremental, không `--full-refresh`) |
 | `structured_monthly` | Ngày 1 hàng tháng 17:00 | `listing,company,financial_ratio` | `+mart_financial_summary +mart_company_profile` |
 | `news_daily` | Daily 06:00 | `news` | `+mart_stock_news_signal +fact_news_article` |
 | `bctc_quarterly` | 15/02, 15/05, 15/08, 15/11 10:00 | `bctc_pdf_meta` | `+mart_bctc_documents` |
-| `gold_full_refresh` | Daily 19:00 | — | full project (`dbt run` + `dbt test`) |
+| `gold_full_refresh` | Daily 19:00 | — | full project (`dbt run --full-refresh` + `dbt test`) |
 
 ---
 
@@ -105,18 +105,19 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 - `is_suspicious`, `bronze_ingested_at`
 - `run_partition`, `source_file`
 
-### `int_price_indicator` (table)
+### `int_price_indicator` (incremental table)
 - `ticker`, `trading_date`
 - `daily_return`
 - `ma7`, `ma20`, `ma50`
 - `rsi14`
 - `macd_line`, `macd_signal`, `macd_hist`
 - `bb_middle`, `bb_upper`, `bb_lower`
+- `volume_ma20`, `obv`
 - `calculated_at`
 
-### `fact_price_daily` (table)
+### `fact_price_daily` (incremental table)
 - tất cả cột từ `stg_price`
-- + indicator: `daily_return`, `ma7`, `ma20`, `ma50`, `rsi14`, `macd_line`, `macd_signal`, `macd_hist`, `bb_middle`, `bb_upper`, `bb_lower`, `calculated_at`
+- + indicator: `daily_return`, `ma7`, `ma20`, `ma50`, `rsi14`, `macd_line`, `macd_signal`, `macd_hist`, `bb_middle`, `bb_upper`, `bb_lower`, `volume_ma20`, `obv`, `calculated_at`
 
 ### `stg_index_price` (view)
 - `index_code`, `trading_date`
@@ -174,7 +175,7 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 - `avg_volume_20d`
 - `pe_ratio`, `pb_ratio`, `eps`, `roe`, `roa`
 
-### `mart_market_overview` (table)
+### `mart_market_overview` (incremental table)
 - `trading_date`
 - `vnindex_close`, `vnindex_return`
 - `vn30_close`, `vn30_return`
@@ -196,9 +197,20 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 - `source`, `snapshot_at`, `is_suspicious`
 - `run_partition`, `source_file`
 
-### `mart_stock_daily` (table)
+### `mart_stock_daily` (incremental table)
 - toàn bộ cột từ `fact_price_daily`
 - + news fields từ `mart_stock_news_signal`: `news_count`, `avg_sentiment_score`, `weighted_sentiment`, `news_signal`, `dominant_sentiment`, `top_articles`
+
+### `mart_price_board` (table)
+- Grain: `symbol + trading_date`
+- Bid/ask 3 bước, giá sàn/trần/tham chiếu, khối lượng, foreign buy/sell/room
+- API: `GET /board/{symbol}`, `GET /board/{symbol}/foreign-flow`
+
+### `mart_financial_summary` (table)
+- Grain: `ticker + period_type + period`
+- Pivot wide từ `stg_financial_ratio` (PE, PB, EPS, ROE, ROA, margin, growth, …)
+- `period_type=annual`: suy từ quarter mới nhất trong năm nếu thiếu annual raw
+- API: `GET /financials/{symbol}`
 
 ### `mart_ticker_directory` (table)
 - `ticker`, `exchange`, `organ_name`, `en_organ_name`, `security_type`
@@ -261,11 +273,12 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 - `dominant_sentiment`
 
 ### `mart_stock_news_signal` (table)
-- Grain hiện tại: `ticker + trading_date`
-- Map bài viết sang phiên giao dịch (`published_date` cuối tuần hoặc sau cutoff có thể chuyển sang phiên kế tiếp)
+- Nguồn: `fact_news_article` (không qua `int_news_sentiment_daily`)
+- Grain: `ticker + trading_date`
+- Map bài viết sang phiên giao dịch (cuối tuần / sau cutoff 14:30 ICT → phiên kế tiếp)
 - `news_count`, `avg_sentiment_score`, `weighted_sentiment`
 - `news_signal`: `buy_signal`, `sell_signal`, `neutral`
-- `dominant_sentiment`, `top_articles`
+- `dominant_sentiment`, `top_articles` (JSONB)
 
 ---
 
@@ -292,17 +305,18 @@ Tài liệu này mô tả **đầu ra của từng luồng dữ liệu** từ **
 ## 3.2 Gold Models
 
 ### `stg_bctc_pdf_meta` (ephemeral)
-- `doc_id`, `ticker`, `year`, `period_key`, `title`, `published_at`
+- `doc_id`, `ticker`, `year`, `period_key`, `title`, `normalized_title`, `published_at`
 - `url_pdf`, `pdf_path`, `file_size`
-- `doc_class`, `is_consolidated`
+- `doc_class`, `canonical_priority`, `is_consolidated`
 - `display_status`, `is_available_for_web`
 - Filter: `display_status != 'error'` & `is_available_for_web = true`
 
 ### `mart_bctc_documents` (table)
-- `doc_id`, `ticker`, `year`, `period_key`, `title`, `published_at`
-- `doc_class`, `is_consolidated`
+- `doc_id`, `ticker`, `year`, `period_key`, `title`, `normalized_title`, `published_at`
+- `doc_class`, `canonical_priority`, `is_consolidated`
 - `display_status`, `is_available_for_web`
 - `url_pdf`, `pdf_path`, `file_size`
+- API list không trả `pdf_path`; endpoint file dùng `pdf_path` để stream local
 
 ---
 
@@ -348,10 +362,10 @@ close-only stock charts, no price-board API, or news joined only by
 
 | Model | Grain | Current use |
 |---|---|---|
-| `int_price_indicator` | `ticker + trading_date` | Return, MA, RSI, MACD, Bollinger, `volume_ma20`, `obv`. Index `(ticker, trading_date)`. |
-| `fact_price_daily` | `ticker + trading_date` | OHLCV + indicators; base for `mart_stock_daily`. Index `(ticker, trading_date)`, `(trading_date)`, `(trading_date, daily_return)`. |
-| `mart_stock_daily` | `ticker + trading_date` | API `/prices/{symbol}` and `/indicators/{symbol}`; JOINs with `mart_stock_news_signal` to embed mapped news fields (`news_count`, `dominant_sentiment`, `weighted_sentiment`, `news_signal`, `top_articles`) into price/indicator output. Index `(ticker, trading_date)`, `(trading_date)`. |
-| `mart_market_overview` | `trading_date` | API `/market/overview`; optional `date`, otherwise latest session. Top movers via window ranking. |
+| `int_price_indicator` | `ticker + trading_date` | Incremental daily (lookback 90d); full rebuild nightly. Return, MA, RSI, MACD, Bollinger, `volume_ma20`, `obv`. |
+| `fact_price_daily` | `ticker + trading_date` | Incremental daily; base for `mart_stock_daily`. |
+| `mart_stock_daily` | `ticker + trading_date` | Incremental daily; API `/prices/{symbol}` and `/indicators/{symbol}`; joins `mart_stock_news_signal`. |
+| `mart_market_overview` | `trading_date` | Incremental daily (1 row/new session); API `/market/overview`. Full rebuild nightly. |
 | `mart_price_board` | `symbol + trading_date` | API `/board/{symbol}` and `/board/{symbol}/foreign-flow`; filters by `trading_date`. |
 | `mart_financial_summary` | `ticker + period_type + period` | API `/financials/{symbol}`; wide financial ratios. Quarterly rows come from source data; annual rows are derived from the latest available quarter in each year when raw annual rows are absent. |
 

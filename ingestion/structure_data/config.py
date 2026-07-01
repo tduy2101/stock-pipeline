@@ -122,7 +122,8 @@ class IngestionConfig:
     listing_exchange_filter: list[str] = field(
         default_factory=lambda: ["HOSE", "HNX"]
     )
-    listing_security_type_filter: list[str] = field(default_factory=list)
+    # Align with Silver listing (stock-only). Use [] to include bonds/ETF/warrants.
+    listing_security_type_filter: list[str] = field(default_factory=lambda: ["stock"])
     # Optional cap after listing load (env STRUCTURED_MAX_TICKERS in Airflow dev/test).
     listing_max_tickers: int | None = None
     # --- Batch ingestion ---

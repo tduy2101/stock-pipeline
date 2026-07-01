@@ -44,7 +44,9 @@ with DAG(
 
     **Load:** ``price,index_price,price_board`` → ``silver.*`` (``latest_partitions=7``)
 
-    **dbt:** explicit subset ``stg_price … mart_market_overview`` (see ``DBT_STRUCTURED_SELECT``)
+    **dbt:** incremental subset (see ``DBT_STRUCTURED_SELECT``):
+    ``fact_index_daily mart_price_board int_price_indicator fact_price_daily
+    mart_stock_daily mart_market_overview``
     (``mart_stock_daily`` joins ``mart_stock_news_signal`` from prior ``news_daily`` runs;
     listing dim & company profile refreshed by ``structured_monthly``).
 

@@ -96,7 +96,7 @@ def _resolve_price_fetch_range(
             raw_root=cfg.data_lake_root,
             dataset="price",
             silver_dataset="price",
-            gold_tables=("gold.fact_price", "gold.mart_stock_daily"),
+            gold_tables=("gold.fact_price_daily", "gold.mart_stock_daily"),
         )
 
     use_ticker_wm = bool(getattr(cfg, "use_bronze_ticker_watermark", False))
@@ -201,7 +201,7 @@ def ingest_prices(cfg: IngestionConfig | None = None) -> dict[str, list[str]]:
         raw_root=cfg.data_lake_root,
         dataset="price",
         silver_dataset="price",
-        gold_tables=("gold.fact_price", "gold.mart_stock_daily"),
+        gold_tables=("gold.fact_price_daily", "gold.mart_stock_daily"),
     )
     for idx, symbol in enumerate(cfg.tickers[: cfg.max_tickers_per_run]):
         ticker_bronze_max = None

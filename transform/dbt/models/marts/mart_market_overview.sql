@@ -1,13 +1,71 @@
 {{
   config(
-    materialized='table',
+    materialized='incremental',
+    incremental_strategy='delete+insert',
+    unique_key='trading_date',
+    on_schema_change='sync_all_columns',
     indexes=[
       {'columns': ['trading_date'], 'type': 'btree', 'unique': true}
     ]
   )
 }}
 
-with index_returns as (
+with
+{% if is_incremental() %}
+watermark as (
+  select coalesce(max(trading_date), '1900-01-01'::date) as max_date
+  from {{ this }}
+),
+
+new_trading_dates as (
+  select distinct f.trading_date
+  from {{ ref('fact_price_daily') }} as f
+  cross join watermark as w
+  where f.trading_date > w.max_date
+),
+
+index_source as (
+  select fid.*
+  from {{ ref('fact_index_daily') }} as fid
+  where fid.trading_date >= (
+    select min(trading_date) - interval '1 day'
+    from new_trading_dates
+  )
+  and fid.trading_date <= (
+    select max(trading_date)
+    from new_trading_dates
+  )
+),
+
+index_returns as (
+  select
+    index_code,
+    trading_date,
+    close,
+    case
+      when lag(close) over (
+        partition by index_code
+        order by trading_date
+      ) <> 0
+        then (
+          close - lag(close) over (
+            partition by index_code
+            order by trading_date
+          )
+        ) / nullif(
+          lag(close) over (
+            partition by index_code
+            order by trading_date
+          ),
+          0
+        )
+      else null
+    end as index_return
+  from index_source
+),
+
+{% else %}
+index_returns as (
   select
     index_code,
     trading_date,
@@ -34,6 +92,8 @@ with index_returns as (
   from {{ ref('fact_index_daily') }}
 ),
 
+{% endif %}
+
 index_pivot as (
   select
     trading_date,
@@ -44,6 +104,9 @@ index_pivot as (
     max(case when index_code = 'HNXINDEX' then close end) as hnx_close,
     max(case when index_code = 'HNXINDEX' then index_return end) as hnx_return
   from index_returns
+  {% if is_incremental() %}
+  where trading_date in (select trading_date from new_trading_dates)
+  {% endif %}
   group by trading_date
 ),
 
@@ -56,6 +119,9 @@ price_agg as (
     count(*) filter (where daily_return < 0) as declines,
     count(*) filter (where daily_return = 0) as unchanged
   from {{ ref('fact_price_daily') }}
+  {% if is_incremental() %}
+  where trading_date in (select trading_date from new_trading_dates)
+  {% endif %}
   group by trading_date
 ),
 
@@ -100,6 +166,9 @@ top_movers as (
       ) as loss_rank
     from {{ ref('fact_price_daily') }}
     where daily_return is not null
+    {% if is_incremental() %}
+      and trading_date in (select trading_date from new_trading_dates)
+    {% endif %}
   ) as ranked
   where gain_rank <= 5
      or loss_rank <= 5

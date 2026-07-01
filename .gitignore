@@ -35,6 +35,7 @@ secrets.*
 data-lake/
 vnstock-agent-guide/
 code_reference&Plan/
+Docs/
 # OS / editor
 .DS_Store
 .idea/

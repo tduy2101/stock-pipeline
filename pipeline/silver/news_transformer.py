@@ -81,7 +81,6 @@ NEGATIVE_KEYWORDS = (
 # html=0 wins over rss=1 when sorting ascending on _source_priority
 _STREAM_PRIORITY = {"html": 0, "rss": 1}
 
-
 @dataclass(slots=True)
 class NewsTransformResult:
     dataframe: pd.DataFrame

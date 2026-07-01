@@ -1,6 +1,6 @@
 # Luồng dữ liệu BCTC (báo cáo tài chính PDF)
 
-Cập nhật: 2026-06-03
+Cập nhật: 2026-06-11
 
 Tài liệu mô tả **toàn bộ** luồng bán cấu trúc BCTC: Bronze (crawl + PDF) → Silver → PostgreSQL `silver` → dbt Gold → FastAPI/React. **Không** có OCR / parse bảng số từ PDF trong scope hiện tại.
 
@@ -572,11 +572,13 @@ select
   year,
   period_key,
   title,
+  normalized_title,
   published_at,
   url_pdf,
   pdf_path,
   file_size,
   doc_class,
+  canonical_priority,
   is_consolidated,
   display_status,
   is_available_for_web
@@ -609,8 +611,10 @@ select
   year,
   period_key,
   title,
+  normalized_title,
   published_at,
   doc_class,
+  canonical_priority,
   is_consolidated,
   display_status,
   is_available_for_web,
@@ -638,6 +642,8 @@ from {{ ref('stg_bctc_pdf_meta') }}
 | `year` | ✓ | ✓ | ✓ | ✓ | — |
 | `period_key` | ✓ | ✓ | ✓ | ✓ | — |
 | `title` | ✓ | ✓ | ✓ | ✓ | ✓ (log) |
+| `normalized_title` | ✓ | ✓ | ✓ | — | — |
+| `canonical_priority` | ✓ | ✓ | ✓ | — | — |
 | `published_at` | ✓ | ✓ | ✓ | ✓ | — |
 | `doc_class` | ✓ | ✓ | ✓ | ✓ | — |
 | `is_consolidated` | ✓ | ✓ | ✓ | ✓ | — |
@@ -646,7 +652,7 @@ from {{ ref('stg_bctc_pdf_meta') }}
 | `url_pdf` | ✓ | ✓ | ✓ | ✓ | fallback redirect |
 | `pdf_path` | ✓ | ✓ | ✓ | — | ✓ `FileResponse` |
 | `file_size` | ✓ | ✓ | ✓ | ✓ | — |
-| `normalized_title`, `sha256`, `status`, `error`, … | ✓ | — | — | — | — |
+| `sha256`, `status`, `error`, … | ✓ | — | — | — | — |
 
 ### 9.6. Phễu lọc dữ liệu & snapshot demo
 

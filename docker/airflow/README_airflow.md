@@ -29,11 +29,11 @@ Pipeline warehouse (root docker-compose.yml)
 
 | DAG | Schedule (ICT) | Pipeline | dbt subset |
 | --- | --- | --- | --- |
-| `structured_daily` | T2–T6 16:30 | bronze price+index+price_board (50 mã) → silver (3 datasets) → load (`--latest-partitions 7`) → dbt | `stg_price … mart_market_overview` (explicit subset, không dùng `+`) |
+| `structured_daily` | T2–T6 16:30 | bronze price+index+price_board (50 mã) → silver (3 datasets) → load (`--latest-partitions 7`) → dbt incremental | `fact_index_daily mart_price_board int_price_indicator fact_price_daily mart_stock_daily mart_market_overview` |
 | `structured_monthly` | Ngày 1 hàng tháng 17:00 | bronze listing+company+financial_ratio (full HOSE/HNX) → silver (3 datasets) → load → dbt | `+mart_financial_summary +mart_company_profile` |
 | `news_daily` | Daily 06:00 | bronze news → silver `--run-partition` → load → dbt | `+mart_stock_news_signal +fact_news_article` |
 | `bctc_quarterly` | 15/02, 15/05, 15/08, 15/11 10:00 | bronze BCTC → silver `bctc_pdf_meta` → load → dbt | `+mart_bctc_documents` |
-| `gold_full_refresh` | Daily 19:00 | `dbt run` + `dbt test` full project | toàn bộ |
+| `gold_full_refresh` | Daily 19:00 | `dbt run --full-refresh` + `dbt test` full project | toàn bộ |
 
 Tất cả DAG: `catchup=False`, task tuần tự (không parallel cùng nguồn API).
 
@@ -126,7 +126,8 @@ Không set `HNX_CRAWL_MAX_LIST_PAGES=500` trong env Airflow trừ khi cố ý ba
 
 - Chỉ price + index + price_board, mặc định 50 mã (watchlist50): **~5–15 phút** bronze/silver (@ 50 rpm).
 - `load_silver` chỉ nạp **7 partition `trading_date` mới nhất** cho `price/index_price/price_board` (không upsert lại toàn bộ lịch sử).
-- `dbt_marts` chạy subset explicit (~10 model); `mart_market_overview` đã tối ưu top movers bằng window ranking.
+- `dbt_marts` chạy **incremental** (~6 model); 4 model nặng chỉ xử lý ngày mới + lookback 90d (`int_price_indicator`).
+- `gold_full_refresh` (19:00) chạy `dbt run --full-refresh` toàn project.
 - listing & company **không** chạy daily nữa — chuyển sang `structured_monthly`.
 - Lần đầu không có Bronze: `bootstrap_full_history_if_missing=False` (DAG) → mã thiếu chỉ kéo ~2 ngày, không full 5 năm. Backfill 5 năm chạy từ notebook.
 - Marker: `data-lake/raw/Structure_Data/price/_full_bootstrap_done.json`.

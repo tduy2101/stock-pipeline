@@ -1,6 +1,6 @@
 # Stock Pipeline - Medallion Data Pipeline cho chứng khoán Việt Nam
 
-Cập nhật: 2026-06-03
+Cập nhật: 2026-06-11
 
 Dự án xây dựng hệ thống Data Pipeline và ứng dụng tra cứu thị
 trường chứng khoán Việt Nam đa nguồn. Kiến trúc hiện tại là **Medallion Data
@@ -46,6 +46,9 @@ Thuật ngữ chuẩn khi mô tả hệ thống:
 idempotent vào schema `silver`, và ghi `silver.load_audit`.
 - dbt project build staging, intermediate, facts, dimensions, marts trong
 schema `gold`.
+- dbt **incremental** cho 4 model nặng (`int_price_indicator`, `fact_price_daily`,
+  `mart_stock_daily`, `mart_market_overview`) — `structured_daily` chỉ xử lý ngày mới;
+  `gold_full_refresh` (19:00) chạy `--full-refresh` toàn project.
 - FastAPI backend read-only, chỉ đọc `gold`.
 - React/Vite/TypeScript frontend đọc API, có dashboard và trang chi tiết ticker.
 - Pytest config chạy được từ repo root, không cần set tay `PYTHONPATH`.
@@ -201,12 +204,53 @@ Hướng dẫn vận hành: [docker/airflow/README_airflow.md](docker/airflow/RE
 
 Chi tiết: [Structure_data_flow.md](Docs/Structure_data_flow.md) · [News_data_flow.md](Docs/News_data_flow.md) · [BCTC_data_flow.md](Docs/BCTC_data_flow.md).
 
+### Cơ chế vận hành — ba chế độ
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 1. NOTEBOOK BACKFILL (lần đầu / đồ án demo đầy đủ lịch sử)              │
+│    ingest_structure_data_manager: full_listing + backfill 5 năm OHLCV   │
+│    ingest_news: days_back=30  |  ingest_bctc: 500 trang HNX             │
+│    → load-silver (full) → dbt run --full-refresh                        │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 2. DAG HÀNG NGÀY (mặc định sau backfill — NHANH, demo 50 mã)            │
+│    structured_daily 16:30: watchlist50 (50 mã) + 5 chỉ số + board      │
+│      bronze incremental ~2 ngày → silver → load 7 partition → dbt incr. │
+│    news_daily 06:00: days_back=1                                        │
+│    gold_full_refresh 19:00: dbt run --full-refresh + test toàn project  │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 3. DAG ĐỊNH KỲ                                                        │
+│    structured_monthly ngày 1: listing + company + financial_ratio full  │
+│    bctc_quarterly: rescan 10 trang HNX + upsert doc_id                  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Số mã cổ phiếu theo từng chế độ:**
+
+| Chế độ | Price OHLCV | Price board | Ghi chú |
+| --- | --- | --- | --- |
+| Notebook `full_listing` + `backfill` | ~1.000+ mã HOSE/HNX | 50 mã (`watchlist_50`) | Backfill 5 năm — chạy 1 lần hoặc khi cần rebuild |
+| `IngestionConfig()` thuần (không DAG) | Full listing HOSE/HNX | Full listing (batched) | Class default; `python -m` không qua Airflow |
+| **`structured_daily` DAG (mặc định)** | **50 mã** `DEFAULT_PRICE_BOARD_TICKERS` | **50 mã** cùng list | `STRUCTURED_DAG_UNIVERSE=watchlist50` — **không đổi**, cố ý demo nhanh |
+| DAG full universe | ~1.000+ mã | theo universe | Set `STRUCTURED_DAG_UNIVERSE=listing` (+ tuỳ chọn `STRUCTURED_MAX_TICKERS=N`) |
+
+**Lưu ý quan trọng:** sau notebook backfill full listing, `silver.price` vẫn chứa **toàn bộ lịch sử** (~700k+ dòng). DAG daily chỉ **cập nhật 50 mã** mỗi ngày; Gold `structured_daily` dùng **dbt incremental** (chỉ tính ngày mới + lookback 90d cho indicator), không rebuild 700k dòng. `gold_full_refresh` 19:00 rebuild toàn bộ Gold cho chính xác tuyệt đối.
+
+**Đổi universe DAG (không sửa code):** trong `docker/airflow/.env.airflow` hoặc Airflow Variables:
+- Giữ demo nhanh: không set gì (mặc định `watchlist50`).
+- Full thị trường: `STRUCTURED_DAG_UNIVERSE=listing`.
+- Dev giới hạn: `STRUCTURED_DAG_UNIVERSE=listing` + `STRUCTURED_MAX_TICKERS=100`.
+
 ### Backfill -> DAG theo dataset
 
 | Dataset | Backfill notebook | DAG mặc định sau backfill | Bronze lưu ở đâu | Silver / warehouse |
 | --- | --- | --- | --- | --- |
 | `listing` | Lấy full snapshot toàn bộ listing, rồi downstream dùng filter `HOSE/HNX` để tạo universe chạy structured | `structured_monthly`: refresh full listing 1 tháng 1 lần | `data-lake/raw/Structure_Data/listing/master/listing.parquet` | `data-lake/silver/listing/current/` -> `silver.listing` -> `gold.dim_security`, `gold.mart_ticker_directory` |
-| `price` | Lấy full OHLCV 5 năm cho toàn bộ ticker trong listing sau filter `HOSE/HNX` | `structured_daily`: incremental, mặc định `watchlist50`, overlap ~2 ngày; có thể đổi sang universe listing bằng `STRUCTURED_DAG_UNIVERSE=listing` | `data-lake/raw/Structure_Data/price/year=<YYYY>/month=<MM>/<TICKER>.parquet` | `data-lake/silver/price/trading_date=<YYYY-MM-DD>/` -> `silver.price` -> `gold.fact_price_daily`, `gold.mart_stock_daily` |
+| `price` | Lấy full OHLCV 5 năm cho toàn bộ ticker trong listing sau filter `HOSE/HNX` | `structured_daily`: incremental **50 mã** (`watchlist50`), overlap ~2 ngày; Gold incremental daily + full refresh 19:00; đổi full listing qua `STRUCTURED_DAG_UNIVERSE=listing` | `data-lake/raw/Structure_Data/price/year=<YYYY>/month=<MM>/<TICKER>.parquet` | `data-lake/silver/price/trading_date=<YYYY-MM-DD>/` -> `silver.price` -> `gold.fact_price_daily`, `gold.mart_stock_daily` |
 | `index_price` | Lấy full 5 năm cho 5 chỉ số cố định `VNINDEX`, `VN30`, `HNXINDEX`, `HNX30`, `UPCOMINDEX` | `structured_daily`: incremental theo ngày cho cùng 5 chỉ số | `data-lake/raw/Structure_Data/index/year=<YYYY>/month=<MM>/<INDEX>.parquet` | `data-lake/silver/index_price/trading_date=<YYYY-MM-DD>/` -> `silver.index_price` -> `gold.fact_index_daily`, `gold.mart_market_overview` |
 | `company` | Lấy snapshot company cho toàn bộ ticker tìm được từ listing universe | `structured_monthly`: refresh full HOSE/HNX 1 tháng 1 lần | `data-lake/raw/Structure_Data/company/snapshots/snapshot_date=<run_date>/company_overview.parquet` | `data-lake/silver/company/current/` -> `silver.company` -> `gold.dim_company`, `gold.mart_company_profile` |
 | `financial_ratio` | Lấy full ratio cho toàn bộ ticker HOSE/HNX từ listing universe | `structured_monthly`: refresh full HOSE/HNX 1 tháng 1 lần | `data-lake/raw/Structure_Data/financial_ratio/snapshot_date=<run_date>/<TICKER>.parquet` | `data-lake/silver/financial_ratio/period_type=<...>/year=<YYYY>/` -> `silver.financial_ratio` -> `gold.mart_financial_summary`, `gold.mart_company_profile` |
@@ -416,7 +460,7 @@ Các model Gold chính:
 | Staging          | `stg_price`, `stg_index_price`, `stg_listing`, `stg_company`, `stg_financial_ratio`, `stg_price_board`, `stg_news` (ephemeral), `stg_bctc_pdf_meta` (ephemeral) |
 | Intermediate     | `int_price_indicator`, `int_news_sentiment_daily`                                                                                       |
 | Facts/dimensions | `fact_price_daily`, `fact_index_daily`, `fact_news_article`, `dim_security`, `dim_company`                                                |
-| Marts            | `mart_stock_daily`, `mart_company_profile`, `mart_market_overview`, `mart_stock_news_daily`, `mart_stock_news_signal`, `mart_price_board`, `mart_financial_summary`, `mart_bctc_documents`, `mart_ticker_directory` |
+| Marts            | `mart_stock_daily`, `mart_company_profile`, `mart_market_overview`, `mart_stock_news_signal`, `mart_price_board`, `mart_financial_summary`, `mart_bctc_documents`, `mart_ticker_directory` (`mart_stock_news_daily` deprecated) |
 
 
 Ghi chú:
@@ -577,6 +621,8 @@ Các route:
 | Route            | Mục đích                                                                                       |
 | ---------------- | ---------------------------------------------------------------------------------------------- |
 | `/`              | Market dashboard, index cards, search (`mart_ticker_directory`), top movers, tin thị trường, BCTC gần đây |
+| `/news`          | Kho tin tức (`fact_news_article`) — lọc, preview `body_text` khi có |
+| `/bctc`          | Kho BCTC (`mart_bctc_documents`) — tra cứu toàn thị trường |
 | `/stock/:symbol` | Profile, chart, board/foreign flow, indicators, financials wide format, tin theo phiên + top articles, BCTC PDF |
 
 

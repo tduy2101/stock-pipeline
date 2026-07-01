@@ -1,6 +1,9 @@
 {{
   config(
-    materialized='table',
+    materialized='incremental',
+    incremental_strategy='delete+insert',
+    unique_key=['ticker', 'trading_date'],
+    on_schema_change='sync_all_columns',
     indexes=[
       {'columns': ['ticker', 'trading_date'], 'type': 'btree', 'unique': true}
     ]
@@ -10,9 +13,33 @@
 /*
 RSI: Cutler's method (SMA-based rolling avg, not Wilder's EMA).
 MACD: SMA12 - SMA26 approximation. Values NULL until window full.
+Incremental: 90-day lookback window per ticker with new data; OBV relative within window.
 */
 
-with base as (
+with
+{% if is_incremental() %}
+watermark as (
+  select coalesce(max(trading_date), '1900-01-01'::date) as max_date
+  from {{ this }}
+),
+
+new_tickers as (
+  select distinct p.ticker
+  from {{ ref('stg_price') }} as p
+  cross join watermark as w
+  where p.trading_date > w.max_date
+),
+
+price_window as (
+  select p.*
+  from {{ ref('stg_price') }} as p
+  inner join new_tickers as n using (ticker)
+  cross join watermark as w
+  where p.trading_date >= (w.max_date - interval '90 days')
+),
+{% endif %}
+
+base as (
   select
     ticker,
     trading_date,
@@ -27,7 +54,7 @@ with base as (
       order by trading_date
       rows between unbounded preceding and current row
     ) as row_num
-  from {{ ref('stg_price') }}
+  from {% if is_incremental() %}price_window{% else %}{{ ref('stg_price') }}{% endif %}
 ),
 
 returns as (
@@ -154,27 +181,35 @@ final as (
     bb_lower,
     volume_ma20
   from indicators
+),
+
+computed as (
+  select
+    ticker,
+    trading_date,
+    daily_return,
+    ma7,
+    ma20,
+    ma50,
+    rsi14,
+    macd_line,
+    macd_signal,
+    macd_line - macd_signal as macd_hist,
+    bb_middle,
+    bb_upper,
+    bb_lower,
+    volume_ma20,
+    sum(signed_volume) over (
+      partition by ticker
+      order by trading_date
+      rows between unbounded preceding and current row
+    ) as obv,
+    current_timestamp as calculated_at
+  from final
 )
 
-select
-  ticker,
-  trading_date,
-  daily_return,
-  ma7,
-  ma20,
-  ma50,
-  rsi14,
-  macd_line,
-  macd_signal,
-  macd_line - macd_signal as macd_hist,
-  bb_middle,
-  bb_upper,
-  bb_lower,
-  volume_ma20,
-  sum(signed_volume) over (
-    partition by ticker
-    order by trading_date
-    rows between unbounded preceding and current row
-  ) as obv,
-  current_timestamp as calculated_at
-from final
+select *
+from computed
+{% if is_incremental() %}
+where trading_date > (select max_date from watermark)
+{% endif %}

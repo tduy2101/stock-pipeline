@@ -1,6 +1,6 @@
 # Luồng dữ liệu có cấu trúc (Structure Data)
 
-Cập nhật: 2026-06-03
+Cập nhật: 2026-06-11
 
 Tài liệu mô tả **toàn bộ** luồng dữ liệu có cấu trúc: Bronze → Silver parquet → PostgreSQL `silver` → Gold (dbt) → FastAPI/Frontend.
 
@@ -125,7 +125,7 @@ Code mặc định (`IngestionConfig()`): `use_listing_as_universe=True`, `listi
 - Bronze: `run_structure_ingestion_pipeline(IngestionConfig())`, `include_listing=False`, `include_company=False`, `include_financial_ratio=False`
 - Silver: lần lượt CLI `--dataset price`, `index_price`, `price_board`
 - Load: `--dataset price,index_price,price_board` với `latest_partitions=7` (chỉ 7 partition `trading_date` mới nhất)
-- dbt: subset explicit `stg_price … mart_market_overview` (không dùng `+` để tránh kéo upstream quá rộng)
+- dbt (incremental): `fact_index_daily mart_price_board int_price_indicator fact_price_daily mart_stock_daily mart_market_overview` (không `--full-refresh`)
 
 **`structured_monthly` tasks:** `bronze_structured_monthly` → `silver_listing` → `silver_company` → `silver_financial_ratio` → `load_silver` → `dbt_marts`
 
@@ -135,6 +135,22 @@ Code mặc định (`IngestionConfig()`): `use_listing_as_universe=True`, `listi
 - dbt: `--select +mart_financial_summary +mart_company_profile`
 
 Runbook: [docker/airflow/README_airflow.md](../docker/airflow/README_airflow.md)
+
+### 4.3. Tóm tắt cơ chế — notebook vs code vs DAG
+
+| | Notebook backfill | `IngestionConfig()` class | `structured_daily` DAG |
+|---|---|---|---|
+| **Mục đích** | Nạp lịch sử đầy đủ cho đồ án | Default khi gọi `python -m` / test | Vận hành hàng ngày nhanh |
+| **Price universe** | `full_listing` (~1.000+ HOSE/HNX) | Full listing (`use_listing_as_universe=True`) | **`watchlist50` = 50 mã cố định** (mặc định, không đổi trong code) |
+| **Price board** | `watchlist_50` (50 mã) | Full listing batched | 50 mã (`DEFAULT_PRICE_BOARD_TICKERS`) |
+| **Index** | 5 chỉ số, full 5 năm | 5 chỉ số, incremental | 5 chỉ số, incremental ~2 ngày |
+| **Bronze mode** | `backfill`: full 5 năm | `use_incremental_window=True`, window 10d | incremental, `incremental_window_days=2`, per-ticker watermark |
+| **Silver → PG** | Manual `load-silver` (full) | Manual | `load_silver` + `--latest-partitions 7` |
+| **Gold dbt** | `dbt run --full-refresh` | Manual | **incremental** 4 model nặng; `gold_full_refresh` 19:00 `--full-refresh` |
+
+**Vì sao `silver.price` có thể ~700k dòng nhưng DAG vẫn nhanh:** notebook backfill ghi full listing; DAG daily chỉ upsert partition mới của **50 mã**; dbt incremental chỉ tính `trading_date` mới (+ lookback 90d cho indicator), không quét lại toàn bộ Silver.
+
+**Đổi số mã DAG:** env `STRUCTURED_DAG_UNIVERSE` — `watchlist50` (default) | `listing` (+ `STRUCTURED_MAX_TICKERS` tùy chọn). Không cần sửa Python để demo 50 mã.
 
 `run_date` / `run_id` = `cfg.run_partition` (ví dụ `2026-05-18T171513`) hoặc `date.today().isoformat()` nếu không set — dùng cho metadata snapshot (`ingested_at`, `snapshot_date`), **không** phải partition chính của OHLCV (OHLCV partition theo **tháng giao dịch**).
 
@@ -199,7 +215,7 @@ Thứ tự quyết định khoảng fetch (per symbol/index), trong `price_inges
 
 **Watermark đọc khi ingest** (`resolve_trading_date_watermark`): lấy **max** của:
 
-1. Gold DB: `max(trading_date)` từ `gold.fact_price` / `gold.mart_stock_daily` (price) nếu có `DATABASE_URL`
+1. Gold DB: `max(trading_date)` từ `gold.fact_price_daily` / `gold.mart_stock_daily` (price) nếu có `DATABASE_URL`
 2. Silver: `max(trading_date)` từ partition `data-lake/silver/price/` hoặc `index_price/`
 3. Raw: `data-lake/raw/Structure_Data/_watermark.json` — key `price` / `index`
 
@@ -430,7 +446,7 @@ Lỗi một dataset không chặn các dataset khác (log `FAILED`, exit code 1 
 
 | Dataset | Cách đọc Bronze | Incremental Silver |
 |---|---|---|
-| **price**, **index_price** | `read_partitioned_parquet` trên `price/` hoặc `index/` với `partition_key=month` (`year=*/month=*/*.parquet`) | Nếu không truyền `--run-partition`: watermark = max(`silver` partition `trading_date`, Gold `fact_price`/`mart_stock_daily` cho price) → chỉ đọc tháng Bronze `>=` tháng watermark và lọc dòng `trading_date > watermark` |
+| **price**, **index_price** | `read_partitioned_parquet` trên `price/` hoặc `index/` với `partition_key=month` (`year=*/month=*/*.parquet`) | Nếu không truyền `--run-partition`: watermark = max(`silver` partition `trading_date`, Gold `fact_price_daily`/`mart_stock_daily` cho price) → chỉ đọc tháng Bronze `>=` tháng watermark và lọc dòng `trading_date > watermark` |
 | **listing** | `read_master_parquet` — file master duy nhất | Luôn xử lý snapshot mới nhất, ghi đè Silver `current/` |
 | **company** | `resolve_latest_snapshot_path` — snapshot `snapshot_date=*` mới nhất | Luôn lấy snapshot Bronze mới nhất, ghi đè Silver `current/` |
 | **financial_ratio** | Glob `snapshot_date=*/*.parquet`, lọc `snapshot_date > watermark` Silver | Watermark = max `snapshot_date` đã có trong Silver (so sánh **chuỗi đầy đủ**, kể cả token `YYYY-MM-DDTHHMMSS`) |
@@ -578,7 +594,24 @@ dbt run --profiles-dir transform/dbt
 dbt test --profiles-dir transform/dbt
 ```
 
-`dbt run` build **toàn bộ** DAG (gồm cả model news/BCTC nếu `silver.news` / `silver.bctc_pdf_meta` đã có dữ liệu). Không có incremental model riêng — mỗi lần `run` refresh table theo cấu hình materialization.
+`dbt run` build DAG theo materialization. Bốn model nặng nhất (`int_price_indicator`, `fact_price_daily`, `mart_stock_daily`, `mart_market_overview`) dùng **`incremental` (delete+insert)** trong `structured_daily`; `gold_full_refresh` (19:00) chạy `dbt run --full-refresh` toàn project.
+
+### 9.1.1. Chiến lược Incremental Gold (từ 2026-06)
+
+| Model | Daily (`structured_daily`) | Nightly (`gold_full_refresh`) |
+|---|---|---|
+| `int_price_indicator` | incremental (lookback 90 ngày, insert ngày mới) | full rebuild |
+| `fact_price_daily` | incremental | full rebuild |
+| `mart_stock_daily` | incremental | full rebuild |
+| `mart_market_overview` | incremental (1 dòng/ngày mới) | full rebuild |
+
+**Watermark:** mỗi model query `max(trading_date) from {{ this }}`.
+
+**Lookback 90 ngày (`int_price_indicator`):** window functions (MA50, MACD, RSI, Bollinger) cần đủ lịch sử; pipeline kéo 90 ngày trước watermark, tính xong, chỉ insert `trading_date > watermark`.
+
+**OBV:** tính relative trong cửa sổ 90 ngày (đủ cho trend); `gold_full_refresh` rebuild OBV absolute chính xác.
+
+**Selector daily:** `fact_index_daily mart_price_board int_price_indicator fact_price_daily mart_stock_daily mart_market_overview` (không `--full-refresh`).
 
 ### 9.2. Giải thích mô hình bảng Gold — `stg`, `fact`, `dim`, `mart`
 
@@ -701,7 +734,7 @@ dbt khai báo `source('silver', …)` cho 6 bảng structured:
 
 ### 9.5. Intermediate (structured)
 
-#### `int_price_indicator` (table `gold.int_price_indicator`)
+#### `int_price_indicator` (incremental table `gold.int_price_indicator`)
 
 - Input: `stg_price`.
 - Tính theo `ticker`, sort `trading_date`:
@@ -710,20 +743,21 @@ dbt khai báo `source('silver', …)` cho 6 bảng structured:
   - **RSI14** — Cutler SMA gain/loss (không phải Wilder EMA).
   - **MACD** — `SMA12 - SMA26`, `macd_signal` = SMA9 của `macd_line`, `macd_hist`.
   - **Bollinger** — middle = MA20, upper/lower = ±2× std20.
+  - **`volume_ma20`**, **`obv`** — SMA volume 20 phiên; OBV tích lũy trong cửa sổ incremental (relative trong daily run, absolute sau `gold_full_refresh`).
 - Grain: `ticker + trading_date`.
 
 ### 9.6. Facts & dimensions (structured)
 
 | Model | Materialization | Grain | Mô tả |
 |---|---|---|---|
-| `fact_price_daily` | table | `ticker + trading_date` | `stg_price` LEFT JOIN `int_price_indicator` — OHLCV + toàn bộ indicator; index `(ticker, trading_date)`, `(trading_date)`, `(trading_date, daily_return)` |
+| `fact_price_daily` | incremental | `ticker + trading_date` | `stg_price` LEFT JOIN `int_price_indicator` — OHLCV + toàn bộ indicator; index `(ticker, trading_date)`, `(trading_date)`, `(trading_date, daily_return)` |
 | `fact_index_daily` | table | `index_code + trading_date` | `stg_index_price` (OHLCV rút gọn); index `(index_code, trading_date)`, `(trading_date)` |
 | `dim_security` | table | `symbol` | `stg_listing` — symbol, tên, sàn, loại |
 | `dim_company` | table | `ticker` | `stg_company` LEFT JOIN `stg_listing` (bổ sung `organ_name`) |
 
 ### 9.7. Marts (output analytics chính — structured)
 
-#### `mart_stock_daily` (table `gold.mart_stock_daily`)
+#### `mart_stock_daily` (incremental table `gold.mart_stock_daily`)
 
 - `fact_price_daily` LEFT JOIN `mart_stock_news_signal` trên `ticker` + `trading_date`.
 - Cột giá + indicator từ fact; thêm `news_count`, `avg_sentiment_score`, `weighted_sentiment`, `dominant_sentiment`, `news_signal`, `top_articles` (0/NULL nếu không có tin).
@@ -741,7 +775,7 @@ dbt khai báo `source('silver', …)` cho 6 bảng structured:
 - Ratios từ `stg_financial_ratio`: lấy **period mới nhất** có `item_code` ∈ (`pe_ratio`, `pb_ratio`, `trailing_eps`, `roe`, `roa`) → pivot `pe_ratio`, `pb_ratio`, `eps`, `roe`, `roa`.
 - Grain: **1 dòng / ticker**. Snapshot demo: **50** rows.
 
-#### `mart_market_overview` (table `gold.mart_market_overview`)
+#### `mart_market_overview` (incremental table `gold.mart_market_overview`)
 
 - **Chỉ số:** `fact_index_daily` → return ngày; pivot `VNINDEX`, `VN30`, `HNXINDEX` (close + return).
 - **Thị trường cổ phiếu:** aggregate `fact_price_daily` theo ngày — `total_volume`, `total_value`, đếm `advances` / `declines` / `unchanged`.
@@ -821,15 +855,15 @@ Tất cả relation vật lý nằm schema **`gold`** (view staging + table inte
 |---|---|---|---|
 | `stg_price`, `stg_index_price`, … | view | — | Không gọi trực tiếp |
 | `stg_financial_ratio` | view | `ticker + item_code + period` | Feed `mart_financial_summary` và `mart_company_profile` |
-| `int_price_indicator` | table | `ticker + trading_date` | Qua `mart_stock_daily` / `fact_price_daily` |
-| `fact_price_daily` | table | `ticker + trading_date` | Nền cho marts (không expose API) |
+| `int_price_indicator` | incremental | `ticker + trading_date` | Qua `mart_stock_daily` / `fact_price_daily`; daily incremental, nightly full |
+| `fact_price_daily` | incremental | `ticker + trading_date` | Nền cho marts (không expose API) |
 | `fact_index_daily` | table | `index_code + trading_date` | Qua `mart_market_overview` |
 | `dim_security` | table | `symbol` | Nền dims / tests |
 | `dim_company` | table | `ticker` | Nền `mart_company_profile` |
 | `fact_news_article` | table | `article_id` | Xem [News_data_flow.md](News_data_flow.md) — `/news/.../articles` |
-| **`mart_stock_daily`** | table | `ticker + trading_date` | `GET /prices/{symbol}`, `GET /indicators/{symbol}` |
+| **`mart_stock_daily`** | incremental | `ticker + trading_date` | `GET /prices/{symbol}`, `GET /indicators/{symbol}` |
 | **`mart_company_profile`** | table | `ticker` | `GET /companies/{symbol}` |
-| **`mart_market_overview`** | table | `trading_date` | `GET /market/overview` |
+| **`mart_market_overview`** | incremental | `trading_date` | `GET /market/overview` |
 | **`mart_price_board`** | table | `symbol + trading_date` | `GET /board/{symbol}`, `GET /board/{symbol}/foreign-flow` |
 | **`mart_financial_summary`** | table | `ticker + period_type + period` | `GET /financials/{symbol}` |
 | **`mart_ticker_directory`** | table | `ticker` | **`GET /tickers`** (search universe + `has_news`, `has_bctc`) |
@@ -904,23 +938,25 @@ Các endpoint dưới đây map trực tiếp tới pipeline structured (price, 
 | GET | `/companies/{symbol}` | `mart_company_profile` | `CompanyProfileResponse` | — |
 | GET | `/prices/{symbol}` | `mart_stock_daily` | `PaginatedResponse[PriceRow]` | `from`, `to`, `page`, `page_size` |
 | GET | `/indicators/{symbol}` | `mart_stock_daily` (+ tính thêm) | `PaginatedResponse[IndicatorRow]` | `from`, `to`, `page`, `page_size` |
-| GET | `/financials/{symbol}` | `stg_financial_ratio` | `list[FinancialRatioRow]` | `period_type` = `quarter` \| `annual` |
+| GET | `/financials/{symbol}` | `mart_financial_summary` | `list[FinancialSummaryRow]` | `period_type` = `quarter` \| `annual` (optional) |
+| GET | `/board/{symbol}` | `mart_price_board` | `PaginatedResponse[PriceBoardRow]` | `from`, `to`, `page`, `page_size` |
+| GET | `/board/{symbol}/foreign-flow` | `mart_price_board` | `list[ForeignFlowRow]` | `from`, `to` |
 
 **Cột trả về chính (structured):**
 
 - **PriceRow:** `ticker`, `trading_date`, OHLCV, `value`, `daily_return`
-- **IndicatorRow:** `close`, MA7/20/50, RSI14, MACD line/signal/hist, Bollinger bands, **`volatility_20d`** (std 20 ngày của `daily_return` — tính trong SQL API, không có sẵn trong mart)
-- **CompanyProfileResponse:** hồ sơ + `latest_close`, 52w high/low, `avg_volume_20d`, PE/PB/EPS/ROE/ROA
+- **IndicatorRow:** `close`, MA7/20/50, RSI14, MACD line/signal/hist, Bollinger bands, `volume_ma20`, `obv`, **`volatility_20d`** (std 20 ngày của `daily_return` — tính trong SQL API, không có sẵn trong mart)
+- **CompanyProfileResponse:** hồ sơ + `latest_close`, 52w high/low, `avg_volume_20d`, PE/PB/EPS/ROE/ROA (UI **không** hiển thị `charter_capital`)
 - **MarketOverviewResponse:** VNINDEX/VN30/HNX close & return, breadth, `top_gainers` / `top_losers` (JSON array)
-- **FinancialRatioRow:** `period`, `item_code`, `item_name`, `value`, …
+- **FinancialSummaryRow:** `period`, `period_type`, `year`, `quarter`, và các metric wide (PE, PB, EPS, ROE, ROA, margin, growth, …)
 
 **Không expose qua API (dù đã ingest):**
 
 | Dữ liệu | Lý do |
 |---|---|
-| `silver.price_board` / `gold.stg_price_board` | Chưa có router hay màn hình |
 | `fact_price_daily`, `fact_index_daily` | Nội bộ dbt; UI dùng `mart_*` |
-| `dim_company` trực tiếp | Gộp trong `mart_company_profile` |
+| `dim_company`, `stg_financial_ratio` | Gộp trong `mart_company_profile` / `mart_financial_summary` |
+| `silver.*`, parquet Silver/Bronze | Chỉ dùng trong pipeline; API chỉ đọc `gold` |
 
 Lỗi **404:** API trả HTTP 404; frontend axios interceptor coi 404 là `data: null` (empty state, không crash).
 
@@ -931,14 +967,19 @@ frontend/src/
 ├── api/
 │   ├── client.ts          # Axios, baseURL VITE_API_URL hoặc /api
 │   ├── stocks.ts          # tickers, company, prices, indicators, financials
-│   └── market.ts          # market overview
+│   ├── market.ts          # market overview
+│   ├── news.ts            # articles, market feed, signal
+│   ├── board.ts           # price board, foreign flow
+│   └── bctc.ts            # documents, recent, file URL
 ├── hooks/                 # TanStack Query wrappers
 ├── pages/
 │   ├── DashboardPage.tsx  # Tổng quan thị trường
-│   └── StockDetailPage.tsx
+│   ├── StockDetailPage.tsx
+│   ├── NewsArchivePage.tsx
+│   └── BctcArchivePage.tsx
 ├── components/
-│   ├── market/            # IndexCard, TopMoversTable, MarketOverviewSection
-│   ├── stock/             # PriceChart, IndicatorChart, FinancialTable
+│   ├── market/            # IndexCard, TopMoversTable, MarketNewsFeed, RecentBctcList
+│   ├── stock/             # PriceChart, IndicatorChart, FinancialTable, PriceBoardTable, ForeignFlowPanel, NewsPanel, BctcPanel
 │   └── shared/SearchBar.tsx
 └── types/index.ts         # TypeScript mirrors Pydantic schemas
 ```
@@ -949,7 +990,7 @@ frontend/src/
 | TanStack Query | Cache API (`staleTime` 30s–5 phút) |
 | Axios | HTTP; proxy dev `/api` → `localhost:8000` (`vite.config.ts`) |
 | Recharts | Biểu đồ giá & chỉ báo |
-| React Router | `/`, `/stock/:symbol` |
+| React Router | `/`, `/news`, `/bctc`, `/stock/:symbol` |
 | Tailwind | UI dark theme |
 
 **Chạy UI:**
@@ -1007,10 +1048,12 @@ flowchart TB
 | Tab | Component | API | Gold | Output |
 |---|---|---|---|---|
 | *(header)* | `useCompany` | `GET /companies/{symbol}` | `mart_company_profile` | Ticker, sàn, ngành, tên, **giá đóng cửa mới nhất** |
-| **Tổng quan** | `StockDetailPage` | `useCompany` | `mart_company_profile` | Hồ sơ (niên hiệu, ngày niêm yết, website, vốn…) + **Key metrics** (52w, vol 20d, P/E, P/B, EPS, ROE, ROA) + mô tả |
-| **Biểu đồ** | `PriceChart` | `usePrices` (`page_size=500`) | `mart_stock_daily` | Line chart **close**; filter 1M/3M/6M/1Y/All |
-| **Chỉ báo** | `IndicatorChart` | `useIndicators` (`page_size=500`) | `mart_stock_daily` | Toggle MA7/20/50, RSI14, MACD + đường close |
-| **Tài chính** | `FinancialTable` | `useFinancials` | `stg_financial_ratio` | Bảng period × metric (quarter/annual/all); tối đa 160 dòng hiển thị |
+| **Tổng quan** | `StockDetailPage` | `useCompany` | `mart_company_profile` | Hồ sơ (niên hiệu, ngày niêm yết, website, …) + **Key metrics** (52w, vol 20d, P/E, P/B, EPS, ROE, ROA); UI **ẩn** `charter_capital` |
+| **Biểu đồ** | `PriceChart` | `usePrices` (`page_size=500`) | `mart_stock_daily` | OHLC (`open`/`high`/`low`/`close`); tooltip `volume`; filter theo date range chung |
+| **Chỉ báo** | `IndicatorChart` | `useIndicators` (`page_size=500`) | `mart_stock_daily` | MA7/20/50, RSI14, MACD, Bollinger, `volume_ma20`, `obv` |
+| **Bảng giá** | `PriceBoardTable` | `useBoard` | `mart_price_board` | Bid/ask, giá sàn/trần, % thay đổi theo `trading_date` |
+| **Khối ngoại** | `ForeignFlowPanel` | `useBoard` (foreign-flow) | `mart_price_board` | Buy/sell/net foreign volume theo ngày |
+| **Tài chính** | `FinancialTable` | `useFinancials` | `mart_financial_summary` | Wide format; tab `quarter` / `annual` / `all` |
 
 Tab **Tin tức** và **BCTC** trên cùng trang dùng luồng news/PDF (không thuộc structured thuần); pipeline structured vẫn cấp **PE/PB/…** qua `mart_company_profile` và có thể cấp sentiment trên `mart_stock_daily` nếu đã chạy ingest news + dbt.
 
@@ -1022,7 +1065,7 @@ Tab **Tin tức** và **BCTC** trên cùng trang dùng luồng news/PDF (không 
 | `index` | `mart_market_overview` | `/market/overview` | Index cards, breadth (gián tiếp từ price agg) |
 | `listing` + `company` | `mart_company_profile`, `dim_security` | `/companies`, `/tickers` | Header mã, tab Tổng quan, search |
 | `financial_ratio` | `mart_financial_summary` | `/financials` | Tab Tài chính; PE/PB trên Tổng quan |
-| `price_board` | `/board/{symbol}` | `mart_price_board` | Bid/ask, foreign flow |
+| `price_board` | `mart_price_board` | `/board/{symbol}`, `/board/{symbol}/foreign-flow` | Bid/ask, foreign flow |
 
 **Điều kiện để UI đầy đủ:** PostgreSQL có dữ liệu sau `load-silver` + `dbt run`; API và frontend cùng `DATABASE_URL` / proxy. **Search ticker** đọc `mart_ticker_directory` (union mã có price/news/BCTC/profile). **Price board tab** dùng `mart_price_board` (đã có API). Toàn bộ `silver.listing` (~1,500 mã) không tự hiện trên search nếu chưa có dữ liệu price/news/BCTC cho mã đó.
 

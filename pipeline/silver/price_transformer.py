@@ -371,7 +371,7 @@ def run_price_silver(
             watermark = _resolve_incremental_watermark(
                 config,
                 "price",
-                gold_tables=("gold.fact_price", "gold.mart_stock_daily"),
+                gold_tables=("gold.fact_price_daily", "gold.mart_stock_daily"),
             )
         batch = read_partitioned_parquet(
             dataset="price",

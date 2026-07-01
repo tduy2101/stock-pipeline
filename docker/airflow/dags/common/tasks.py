@@ -29,7 +29,13 @@ DBT_PROJECT_DIR = "transform/dbt"
 DBT_PROFILES_DIR = "transform/dbt"
 
 # dbt subset selectors aligned with transform/dbt model refs (see Docs/dbt_outputs_and_lineage.md)
+# Daily incremental path: fast models + 4 incremental gold tables (no full rebuild).
 DBT_STRUCTURED_SELECT = (
+    "fact_index_daily mart_price_board "
+    "int_price_indicator fact_price_daily mart_stock_daily mart_market_overview"
+)
+# Legacy full-rebuild selector (backfill / manual use).
+DBT_STRUCTURED_SELECT_FULL = (
     "stg_price stg_index_price stg_price_board "
     "int_price_indicator fact_price_daily fact_index_daily "
     "fact_news_article mart_stock_news_signal "
@@ -127,15 +133,18 @@ def _structured_ingestion_config():
         return cfg
 
     if universe in {"listing", "full", "hose_hnx"}:
+        cfg.use_listing_as_universe = True
+        cfg.listing_exchange_filter = ["HOSE", "HNX"]
+        cfg.listing_security_type_filter = ["stock"]
         cap_raw = os.environ.get("STRUCTURED_MAX_TICKERS", "").strip()
         if cap_raw.isdigit() and int(cap_raw) > 0:
             cfg.listing_max_tickers = int(cap_raw)
             LOGGER.info(
-                "Structured DAG universe=listing HOSE/HNX cap=%s (STRUCTURED_MAX_TICKERS)",
+                "Structured DAG universe=listing HOSE/HNX stocks cap=%s (STRUCTURED_MAX_TICKERS)",
                 cfg.listing_max_tickers,
             )
         else:
-            LOGGER.info("Structured DAG universe=listing HOSE/HNX (full)")
+            LOGGER.info("Structured DAG universe=listing HOSE/HNX stocks (full)")
         return cfg
 
     raise ValueError(
@@ -156,29 +165,36 @@ def _structured_monthly_config():
     cfg = IngestionConfig()
     cfg.use_listing_as_universe = True
     cfg.listing_exchange_filter = ["HOSE", "HNX"]
+    cfg.listing_security_type_filter = ["stock"]
     cap_raw = os.environ.get("STRUCTURED_MAX_TICKERS", "").strip()
     if cap_raw.isdigit() and int(cap_raw) > 0:
         cfg.listing_max_tickers = int(cap_raw)
-        LOGGER.info("Structured monthly: HOSE/HNX cap=%s (STRUCTURED_MAX_TICKERS)", cfg.listing_max_tickers)
+        LOGGER.info(
+            "Structured monthly: HOSE/HNX stocks cap=%s (STRUCTURED_MAX_TICKERS)",
+            cfg.listing_max_tickers,
+        )
     else:
-        LOGGER.info("Structured monthly: full HOSE/HNX listing universe")
+        LOGGER.info(
+            "Structured monthly: full HOSE/HNX stock universe from listing bronze"
+        )
     return cfg
 
 
 def _load_listing_tickers_into_cfg(cfg, *, exchange_filter: list[str] | None = None) -> int:
     """
-    Populate cfg.tickers from Bronze listing parquet (HOSE/HNX filter).
+    Populate cfg.tickers from Bronze listing parquet (exchange + stock filters).
 
     Required for financial_ratio_weekly: run_financial_ratio_ingestion_pipeline
     intersects exchange tickers with cfg.tickers (default only 20 demo symbols).
     """
+    if not cfg.listing_security_type_filter:
+        cfg.listing_security_type_filter = ["stock"]
     from ingestion.structure_data.common import load_tickers_from_listing_bronze_in_file_order
 
     ex = exchange_filter if exchange_filter is not None else cfg.listing_exchange_filter
     tickers = load_tickers_from_listing_bronze_in_file_order(
         cfg,
         exchange_filter=ex,
-        security_type_filter=[],
     )
     cap = getattr(cfg, "listing_max_tickers", None)
     if cap is not None and int(cap) > 0:
@@ -258,7 +274,9 @@ def ingest_structured_monthly(**_: Any) -> dict[str, Any]:
     cfg = _structured_monthly_config()
     cfg.bootstrap_full_history_if_missing = False
     cfg.delay_between_categories_sec = 5
-    LOGGER.info("Structured bronze (monthly): listing+company+financial_ratio full HOSE/HNX")
+    LOGGER.info(
+        "Structured bronze (monthly): listing+company+financial_ratio HOSE/HNX stocks"
+    )
     result = run_structure_ingestion_pipeline(
         cfg,
         include_prices=False,
@@ -452,6 +470,7 @@ def dbt_run_full(**_: Any) -> None:
             DBT_PROJECT_DIR,
             "--profiles-dir",
             DBT_PROFILES_DIR,
+            "--full-refresh",
         ],
         cwd=root,
     )
