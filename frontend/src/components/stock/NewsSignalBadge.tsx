@@ -1,4 +1,5 @@
 import { useNewsSignalSummary } from '@/hooks/useNews'
+import type { SentimentLabel } from '@/types'
 
 interface NewsSignalBadgeProps {
   symbol: string
@@ -19,6 +20,12 @@ const signalConfig = {
   },
 }
 
+const sentimentVi: Record<SentimentLabel, string> = {
+  positive: 'Tích cực',
+  neutral: 'Trung lập',
+  negative: 'Tiêu cực',
+}
+
 export function NewsSignalBadge({ symbol }: NewsSignalBadgeProps) {
   const { data, isLoading } = useNewsSignalSummary(symbol)
 
@@ -31,8 +38,9 @@ export function NewsSignalBadge({ symbol }: NewsSignalBadgeProps) {
     <div className="group relative inline-flex">
       <span
         className={`inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium ${config.className}`}
+        title="Sắc thái tin tức gần nhất — chỉ mang tính tham khảo"
       >
-        <span className="h-1.5 w-1.5 rounded-full bg-current" />
+        <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
         {config.label}
         {data.news_count != null && (
           <span className="opacity-75">({data.news_count} tin)</span>
@@ -63,7 +71,7 @@ export function NewsSignalBadge({ symbol }: NewsSignalBadgeProps) {
                           : 'text-app-muted'
                     }
                   >
-                    {article.sentiment ?? 'neutral'}
+                    {article.sentiment ? sentimentVi[article.sentiment] : 'Trung lập'}
                   </span>
                   {article.relevance === 'title' && (
                     <span className="text-accent">nhắc trong tiêu đề</span>

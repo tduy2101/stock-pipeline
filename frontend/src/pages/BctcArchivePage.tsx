@@ -7,7 +7,7 @@ import { EmptyState } from '@/components/shared/EmptyState'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAllBctcDocuments } from '@/hooks/useBctc'
 import { formatBytes, formatDate, formatVolume } from '@/utils/formatters'
-
+import { Calendar } from 'lucide-react';
 const PAGE_SIZE = 25
 
 export default function BctcArchivePage() {
@@ -50,7 +50,7 @@ export default function BctcArchivePage() {
             </div>
             <h1 className="mt-2 text-2xl font-bold text-app-heading">Kho BCTC PDF</h1>
             <p className="mt-1 text-sm text-app-muted">
-              Tập hợp tài liệu BCTC có thể xem trên web, giữ ticker, năm báo cáo, kỳ, ngày công bố và link PDF.
+              Kho tài liệu báo cáo tài chính đã crawl — tra cứu metadata và mở file PDF. Hệ thống chưa trích xuất số liệu từ PDF.
             </p>
           </div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -71,8 +71,11 @@ export default function BctcArchivePage() {
       </section>
 
       <section className="rounded-lg border border-app-border bg-panel-dark p-4">
-        <div className="grid gap-3 lg:grid-cols-[1fr_10rem_9rem_10rem_10rem]">
-          <label className="relative">
+        {/* Thêm items-end để các ô input không có label phụ luôn thẳng hàng ở đáy với 2 ô Date */}
+        <div className="grid gap-3 lg:grid-cols-[1fr_10rem_9rem_10rem_10rem] items-end">
+
+          {/* Ô Tìm kiếm - Giữ nguyên placeholder gốc */}
+          <div className="relative w-full">
             <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-app-muted" size={16} />
             <input
               value={query}
@@ -80,13 +83,17 @@ export default function BctcArchivePage() {
               placeholder="Tìm theo tiêu đề tài liệu"
               className="h-10 w-full rounded-lg border border-app-border bg-app-input pl-9 pr-3 text-sm text-app-heading outline-none focus:border-accent"
             />
-          </label>
+          </div>
+
+          {/* Ô Ticker - Giữ nguyên */}
           <input
             value={ticker}
             onChange={(event) => updateFilter(setTicker, event.target.value)}
             placeholder="Ticker"
             className="h-10 rounded-lg border border-app-border bg-app-input px-3 text-sm font-mono text-app-heading outline-none focus:border-accent"
           />
+
+          {/* Ô Năm - Giữ nguyên */}
           <input
             value={year}
             onChange={(event) => updateFilter(setYear, event.target.value)}
@@ -94,24 +101,57 @@ export default function BctcArchivePage() {
             inputMode="numeric"
             className="h-10 rounded-lg border border-app-border bg-app-input px-3 text-sm font-mono text-app-heading outline-none focus:border-accent"
           />
-          <label className="grid gap-1">
-            <span className="text-[11px] text-app-muted">Từ ngày công bố</span>
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(event) => updateFilter(setFromDate, event.target.value)}
-              className="h-10 rounded-lg border border-app-border bg-app-input px-3 text-sm text-app-heading outline-none focus:border-accent"
-            />
+
+          {/* Ô Từ ngày công bố - Cập nhật giao diện đồng bộ */}
+          <label className="grid gap-1 relative group cursor-pointer">
+            <span className="text-[11px] font-medium text-app-muted">Từ ngày công bố</span>
+            <div className="relative flex items-center">
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(event) => updateFilter(setFromDate, event.target.value)}
+                className="h-10 w-full rounded-lg border border-app-border bg-app-input pl-3 pr-10 text-sm text-app-heading outline-none focus:border-accent [color-scheme:dark] 
+          [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer
+          [&::-webkit-datetime-edit]:opacity-0 focus:[&::-webkit-datetime-edit]:opacity-100 data-[has-value=true]:[&::-webkit-datetime-edit]:opacity-100"
+                data-has-value={!!fromDate}
+              />
+              {!fromDate && (
+                <span className="absolute left-3 text-sm text-app-muted pointer-events-none group-focus-within:hidden">
+                  dd/mm/yyyy
+                </span>
+              )}
+              <Calendar
+                size={16}
+                className="absolute right-3 text-app-muted pointer-events-none group-focus-within:text-accent transition-colors"
+              />
+            </div>
           </label>
-          <label className="grid gap-1">
-            <span className="text-[11px] text-app-muted">Đến ngày công bố</span>
-            <input
-              type="date"
-              value={toDate}
-              onChange={(event) => updateFilter(setToDate, event.target.value)}
-              className="h-10 rounded-lg border border-app-border bg-app-input px-3 text-sm text-app-heading outline-none focus:border-accent"
-            />
+
+          {/* Ô Đến ngày công bố - Cập nhật giao diện đồng bộ */}
+          <label className="grid gap-1 relative group cursor-pointer">
+            <span className="text-[11px] font-medium text-app-muted">Đến ngày công bố</span>
+            <div className="relative flex items-center">
+              <input
+                type="date"
+                value={toDate}
+                onChange={(event) => updateFilter(setToDate, event.target.value)}
+                className="h-10 w-full rounded-lg border border-app-border bg-app-input pl-3 pr-10 text-sm text-app-heading outline-none focus:border-accent [color-scheme:dark] 
+          [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer
+          [&::-webkit-datetime-edit]:opacity-0 focus:[&::-webkit-datetime-edit]:opacity-100 data-[has-value=true]:[&::-webkit-datetime-edit]:opacity-100"
+                data-has-value={!!toDate}
+              />
+              {!toDate && (
+                <span className="absolute left-3 text-sm text-app-muted pointer-events-none group-focus-within:hidden">
+                  dd/mm/yyyy
+                </span>
+              )}
+              <Calendar
+                size={16}
+                className="absolute right-3 text-app-muted pointer-events-none group-focus-within:text-accent transition-colors"
+              />
+            </div>
           </label>
+
         </div>
       </section>
 

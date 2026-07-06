@@ -21,6 +21,10 @@ from backend.schemas.news import (
 router = APIRouter(prefix="/news", tags=["news"])
 
 _TICKER_NEWS_WHERE = "ticker = %s"
+# published_date in silver is UTC calendar day; filter/display use VN (ICT) for "ngày đăng".
+_PUBLISHED_VN_DATE_SQL = (
+    "COALESCE((published_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date, published_date)"
+)
 
 
 def _parse_top_articles(value: Any) -> list[TopArticle] | None:
@@ -74,13 +78,13 @@ def list_all_news_articles(
         to_date,
     )
 
-    where_clause = """
+    where_clause = f"""
       (%s IS NULL OR ticker = %s)
       AND (%s IS NULL OR title ILIKE %s OR summary ILIKE %s OR body_text ILIKE %s)
       AND (%s IS NULL OR sentiment_label = %s)
       AND (%s IS NULL OR ticker_relevance = %s)
-      AND (%s IS NULL OR published_date >= %s)
-      AND (%s IS NULL OR published_date <= %s)
+      AND (%s IS NULL OR {_PUBLISHED_VN_DATE_SQL} >= %s)
+      AND (%s IS NULL OR {_PUBLISHED_VN_DATE_SQL} <= %s)
     """
 
     with conn.cursor() as cur:
@@ -193,8 +197,8 @@ def get_news_articles(
             FROM gold.fact_news_article
             WHERE {_TICKER_NEWS_WHERE}
               AND (%s IS NULL OR ticker_relevance = %s)
-              AND (%s IS NULL OR published_date >= %s)
-              AND (%s IS NULL OR published_date <= %s)
+              AND (%s IS NULL OR {_PUBLISHED_VN_DATE_SQL} >= %s)
+              AND (%s IS NULL OR {_PUBLISHED_VN_DATE_SQL} <= %s)
             """,
             (
                 ticker,
@@ -231,8 +235,8 @@ def get_news_articles(
             FROM gold.fact_news_article
             WHERE {_TICKER_NEWS_WHERE}
               AND (%s IS NULL OR ticker_relevance = %s)
-              AND (%s IS NULL OR published_date >= %s)
-              AND (%s IS NULL OR published_date <= %s)
+              AND (%s IS NULL OR {_PUBLISHED_VN_DATE_SQL} >= %s)
+              AND (%s IS NULL OR {_PUBLISHED_VN_DATE_SQL} <= %s)
             ORDER BY published_at DESC NULLS LAST,
                      published_date DESC NULLS LAST,
                      article_id

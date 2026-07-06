@@ -1,4 +1,37 @@
-# Thông tin luồng tổng quan 
+# Pipeline Information — Tổng hợp luồng dữ liệu stock-pipeline
+
+Cập nhật: 2026-07-03
+
+**Mục đích:** Tài liệu **single entry point** mô tả 3 luồng dữ liệu (structured, news, BCTC), tham số vận hành, lineage Silver→Gold→API→UI. Chi tiết từng luồng và catalog cột đầy đủ nằm trong `Docs/`.
+
+**Tài liệu chi tiết:**
+
+| File | Nội dung |
+|---|---|
+| [Docs/Structure_data_flow.md](Docs/Structure_data_flow.md) | vnstock, OHLCV, listing, ratio, price board |
+| [Docs/News_data_flow.md](Docs/News_data_flow.md) | RSS/HTML, sentiment, `mart_stock_news_signal` |
+| [Docs/BCTC_data_flow.md](Docs/BCTC_data_flow.md) | HNX crawl, PDF, `mart_bctc_documents` |
+| [Docs/dbt_outputs_and_lineage.md](Docs/dbt_outputs_and_lineage.md) | Cột Silver/Gold, lineage API |
+| [Docs/parameters.md](Docs/parameters.md) | Tham số 4 lớp (env / config / CLI / DAG) |
+| [README.md](README.md) | Runbook, snapshot, endpoints |
+| [docker/airflow/README_airflow.md](docker/airflow/README_airflow.md) | Airflow 3.2, DAG, troubleshooting |
+
+## Mục lục
+
+1. [Tổng quan Medallion](#1-tổng-quan-medallion)
+2. [Tham số & vận hành](#2-tham-số--vận-hành)
+3. [Airflow & lịch ICT](#3-airflow--lịch-ict)
+4. [Luồng có cấu trúc (Structured)](#4-luồng-có-cấu-trúc-structured)
+5. [Luồng tin tức (News)](#5-luồng-tin-tức-news)
+6. [Luồng BCTC PDF](#6-luồng-bctc-pdf)
+7. [Lineage Silver → Gold](#7-lineage-silver--gold)
+8. [Gold → API → Frontend](#8-gold--api--frontend)
+9. [Runbook & troubleshooting](#9-runbook--troubleshooting)
+10. [Phạm vi & hạn chế](#10-phạm-vi--hạn-chế)
+
+---
+
+# 1. Tổng quan Medallion
 
 Tổng quan luồng dữ liệu của dự án này là một pipeline ELT kiểu medallion, đi theo chuỗi:
 
@@ -54,7 +87,87 @@ Nếu tóm lại thành một câu:
 
 **Pipeline này lấy dữ liệu từ nguồn ngoài, lưu thô ở local, transform bằng Python thành Silver, nạp vào PostgreSQL, dùng dbt dựng các mart Gold, rồi backend lấy dữ liệu từ các mart đó để phục vụ frontend.**
 
-# Thông tin luồng có cấu trúc
+Thuật ngữ chuẩn: **Medallion Architecture**, **batch ELT** (không realtime), **analytical serving layer** (PostgreSQL + dbt + FastAPI read-only) — **không phải OLTP**.
+
+---
+
+# 2. Tham số & vận hành
+
+Tham số chia **4 lớp** (chi tiết: [Docs/parameters.md](Docs/parameters.md)):
+
+1. **Biến môi trường** — `.env`, Airflow env
+2. **Class config** — `IngestionConfig`, `NewsIngestionConfig`, `SemiStructuredIngestionConfig`, `SilverConfig`
+3. **CLI** — `pipeline/silver/cli.py`, `warehouse/loader/cli.py`, `dbt run --select`
+4. **DAG Airflow** — ghi đè config + subset dataset/load/dbt
+
+### Biến môi trường quan trọng
+
+| Biến | Vai trò |
+|---|---|
+| `VNSTOCK_API_KEY` | API vnstock (structured) |
+| `STRUCTURED_DAG_UNIVERSE` | `watchlist50` (50 mã) hoặc `listing` (full HOSE/HNX) |
+| `STRUCTURED_MAX_TICKERS` | Cap mã khi `universe=listing` |
+| `DATABASE_URL` / `GOLD_DATABASE_URL` | Loader, FastAPI, Silver watermark giá |
+| `PG_HOST`, `PG_PORT` | dbt profiles (`55432`) |
+| `STOCK_PIPELINE_ROOT` | Root repo trong container Airflow |
+| `HNX_CRAWL_MAX_LIST_PAGES`, `HNX_SSL_VERIFY`, `HNX_RESUME_FROM_STATE` | Crawl BCTC |
+| `BCTC_ALLOW_EN_DOCS`, `BCTC_INGEST_ALL_CRAWLED_PDFS` | Filter download PDF |
+
+### Ghi đè DAG so với default code
+
+| DAG | Điểm khác biệt chính |
+|---|---|
+| `structured_daily` | 50 mã watchlist; `incremental_window_days=2`; watermark/ticker; chỉ price+index+board; load `--latest-partitions 7`; dbt incremental subset |
+| `structured_monthly` | Full listing HOSE/HNX stock; listing+company+financial_ratio |
+| `news_daily` | `days_back=1`; Silver `--strict`; partition từ XCom |
+| `bctc_quarterly` | `hnx_max_list_pages=10`; `run_partition=today` |
+| `gold_full_refresh` | `dbt run --full-refresh` + `dbt test` toàn project |
+
+**Đổi universe daily không sửa Python:** `STRUCTURED_DAG_UNIVERSE=listing` (+ `STRUCTURED_MAX_TICKERS` tùy chọn).
+
+**Incremental indicator:** `int_price_indicator` lookback **90 ngày** khi chạy incremental.
+
+**Một câu cho bảo vệ:** *Default `IngestionConfig` hướng backfill full universe; DAG hàng ngày ghi đè 50 mã watchlist, incremental 2 ngày, load 7 partition, dbt subset; DAG tháng refresh listing/company/ratio; 19h full-refresh dbt.*
+
+---
+
+# 3. Airflow & lịch ICT
+
+Apache Airflow **3.2** (LocalExecutor) — 5 DAG: Bronze → Silver → load `silver.*` → dbt `gold.*`.
+
+```text
+Airflow (docker/airflow) — metadata Postgres :5433
+  └── tasks → PYTHONPATH=/opt/stock-pipeline
+        ├── ingestion.* (bronze)
+        ├── pipeline.silver.cli
+        ├── warehouse.loader.cli
+        └── dbt run/test
+
+Warehouse (docker-compose.yml root) — stock-pipeline-db :55432
+```
+
+| DAG | Schedule (ICT) | Pipeline tóm tắt |
+|---|---|---|
+| `structured_daily` | T2–T6 16:30 | price + index + price_board (50 mã) → silver → load (7 partition) → dbt incremental |
+| `structured_monthly` | Ngày 1, 17:00 | listing + company + financial_ratio → silver → load → dbt |
+| `news_daily` | Daily 06:00 | news bronze → silver → load → dbt news marts |
+| `bctc_quarterly` | 15/2, 5, 8, 11 10:00 | BCTC crawl → silver → load → `mart_bctc_documents` |
+| `gold_full_refresh` | Daily 19:00 | Full-refresh + test toàn project |
+
+Tất cả DAG: `catchup=False`, `max_active_runs=1`, task tuần tự.
+
+**Vận hành quan trọng:**
+
+- DAG tạo **paused** — phải **unpause** để scheduler chạy; nếu pause giữa run, task downstream không được schedule.
+- **Trigger manual** chỉ tạo run `manual__...` — không “bật thêm” cron. Run `scheduled__...` xuất hiện khi scheduler bù slot lịch chưa chạy.
+- Trước trigger tay: mark failed run `scheduled__` đang queued/running nếu có — tránh thấy 2 dòng trên Grid.
+- Postgres warehouse: `shm_size: 512mb` (root `docker-compose.yml`) — tránh dbt fail vì `/dev/shm` nhỏ.
+
+Chi tiết setup: [docker/airflow/README_airflow.md](docker/airflow/README_airflow.md).
+
+---
+
+# 4. Luồng có cấu trúc (Structured)
 
 Phạm vi: **6 dataset** từ vnstock (không gồm news/BCTC): `price`, `index_price`, `listing`, `company`, `financial_ratio`, `price_board`. Nguồn duy nhất: thư viện **vnstock** (`Quote`, `Listing`, `Company`, `Finance`, `Trading`), fallback nguồn **kbs → vci**.
 
@@ -323,14 +436,26 @@ bronze (listing+company+financial_ratio, full HOSE/HNX)
 ```
 
 ### Notebook backfill vs DAG
-| | Notebook thường | DAG daily |
-|---|---|---|
-| Price universe | Full listing HOSE/HNX | 50 mã cố định |
-| Price history | 5 năm backfill | +2 ngày/ticker |
-| Listing/company | Cùng pipeline | Monthly riêng |
-| Silver price history | Giữ toàn bộ partition | Chỉ thêm partition mới |
 
-Sau backfill full listing, `silver.price` vẫn chứa lịch sử đầy đủ; DAG daily chỉ **cập nhật subset** mã.
+Notebook `ingestion/ingest_structure_data_manager.ipynb` — các cell cấu hình:
+
+| Cell / biến | Giá trị | Ý nghĩa |
+|---|---|---|
+| `UNIVERSE_MODE` | `demo_50` / `full_listing` | 50 mã test vs ~700+ mã HOSE/HNX |
+| `RUN_PROFILE` | `backfill` / `daily_incremental` | Full 5 năm vs cửa sổ incremental |
+| `RUN_ONE_SHOT_PIPELINE` | `True` / `False` | Một cell pipeline vs từng `ingest_*` |
+| `PRICE_BOARD_MODE` | `watchlist_50` / full | Snapshot bảng giá 50 mã vs listing |
+
+| | Notebook thường | `IngestionConfig()` class | DAG daily |
+|---|---|---|---|
+| Price universe | Full listing HOSE/HNX | Full listing | **50 mã watchlist** |
+| Price history | 5 năm backfill | incremental window 10d | +2 ngày/ticker, watermark |
+| Price board | watchlist_50 | full listing batched | 50 mã |
+| Listing/company | Cùng pipeline | Cùng | Monthly riêng |
+| Silver → PG | Manual `load-silver` | Manual | `latest_partitions=7` |
+| Gold dbt | `--full-refresh` | Manual | incremental subset; 19h full-refresh |
+
+Sau backfill full listing, `silver.price` vẫn chứa lịch sử đầy đủ; DAG daily chỉ **cập nhật subset** mã. `mart_financial_summary`: hàng **annual** có thể suy từ quarter mới nhất trong năm khi nguồn thiếu annual thô.
 
 ---
 
@@ -370,9 +495,11 @@ Sau backfill full listing, `silver.price` vẫn chứa lịch sử đầy đủ;
 
 ---
 
-Nếu cần đi sâu tiếp, có thể tách riêng từng dataset (ví dụ chỉ `financial_ratio` wide→long→pivot) hoặc so sánh watermark Bronze vs Silver vs Gold trên một mã cụ thể.
+Chi tiết đầy đủ: [Docs/Structure_data_flow.md](Docs/Structure_data_flow.md).
 
-# Thông tin luồng tin tức
+---
+
+# 5. Luồng tin tức (News)
 
 Đây là **batch ELT keyword-based**, không phải mô hình ML. Sentiment được **tính một lần ở Silver**; Gold chỉ **tái sử dụng** `sentiment_score`/`sentiment_label` đó để explode ticker, gán trọng số và tổng hợp theo phiên giao dịch.
 
@@ -397,6 +524,15 @@ sources.yaml (RSS + HTML)
 **Partition quan trọng:** `date=<run_date>` ở Bronze/Silver = **ngày chạy job** (`NewsIngestionConfig.run_date` = `date.today()`), không phải `published_at`.
 
 **Orchestration:** DAG `news_daily` (06:00 ICT) — `bronze_news` → `silver_news` (XCom partition) → `load_silver` → `dbt_marts` với selector `+mart_stock_news_signal +fact_news_article`.
+
+**Ngày đăng (timezone VN):**
+
+- Silver: `published_date` = ngày lịch từ `published_at` theo **`Asia/Ho_Chi_Minh`** (`news_transformer.py`).
+- API lọc archive: `COALESCE((published_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date, published_date)` — khớp “ngày đăng” trên UI.
+- Frontend: `formatNewsPublishDate()` hiển thị theo ICT.
+- **Khác** `trading_date` trong `mart_stock_news_signal` (map phiên giao dịch, cutoff 14:30).
+
+**CLI thêm nguồn HTML:** `python -m ingestion.unstructured_data.html_discovery --url "..."` (xem `Docs/News_data_flow.md`).
 
 ---
 
@@ -479,7 +615,8 @@ label = positive nếu score > 0
 Ghi `data-lake/silver/news/date=<run_partition>/PART-000.parquet`  
 Load vào `silver.news` (PK `article_id`, upsert idempotent; dedupe cross-partition khi load).
 
-**Grain Silver:** `article_id` (một dòng/bài). Sentiment gắn **cả bài**, chưa tách theo ticker.
+**Grain Silver:** `article_id` (một dòng/bài). Sentiment gắn **cả bài**, chưa tách theo ticker.  
+`published_date` = ngày ICT từ `published_at` (ingest mới); dữ liệu cũ vẫn được API chuẩn hóa qua `published_at`.
 
 ---
 
@@ -526,7 +663,8 @@ from {{ ref('stg_news') }}
 
 - **Grain:** `article_id + ticker` (test unique trong `schema.yml`)
 - **Materialization:** `table` (full rebuild khi DAG news chạy selector `+fact_news_article`)
-- **API:** `GET /news/articles`, `/news/market`, `/news/{symbol}/articles` — kho tin, lọc `sentiment`, `relevance`, `published_date`
+- **API:** `GET /news/articles`, `/news/market`, `/news/{symbol}/articles` — kho tin; lọc ngày theo **ICT** (`from`/`to`); `sentiment`, `relevance`
+- **Grain Gold:** `(article_id, ticker)` — một bài nhắc nhiều mã → nhiều dòng
 
 ### 5.3 `int_news_sentiment_daily` (table, legacy path)
 
@@ -635,11 +773,11 @@ Bài nhắc **FPT và VCB**: Silver 1 dòng, score chung; `stg_news` **2 dòng**
 
 ---
 
-Nếu cần đi sâu thêm, có thể tách riêng: logic `ticker_match` (blocklist/scoring), hoặc so sánh `published_date` vs `trading_date` trên dữ liệu thực của một ticker cụ thể.
+Chi tiết đầy đủ: [Docs/News_data_flow.md](Docs/News_data_flow.md).
 
-## Thông tin luồng BCTC PDF
+---
 
-# Luồng BCTC — kiến trúc và mô hình dữ liệu
+# 6. Luồng BCTC PDF
 
 Phạm vi đã xác minh từ code: crawl/tải **PDF báo cáo tài chính từ HNX**, lưu metadata + file, phục vụ tra cứu và xem PDF trên web. **Không có** OCR, trích xuất bảng số liệu, hay parser BCTC vào fact/mart tài chính.
 
@@ -904,6 +1042,25 @@ Sort: `canonical_priority ASC`, `published_at DESC`, `year DESC`.
 
 **Mô hình incremental thực tế:** **rescan top N trang + upsert `doc_id`** — không crawl theo ngày `published_at`. Mỗi quý quét lại disclosure gần nhất trên HNX.
 
+### So sánh nhanh Structured vs BCTC
+
+| | Structured (vnstock) | BCTC PDF |
+|---|---|---|
+| Nguồn | vnstock API | HNX web + `owa.hnx.vn` |
+| Partition Bronze chính | Tháng GD / snapshot | `date=run_date` job |
+| Incremental | Watermark OHLCV | Rescan top N trang + upsert `doc_id` |
+| Warehouse upsert key | Theo dataset PK | `doc_id` |
+| Gold mart chính | `mart_stock_daily`, … | `mart_bctc_documents` |
+| Stream file | — | PDF local `pdf_path`; fallback redirect `url_pdf` |
+
+### Checklist vận hành (tóm tắt)
+
+1. **Bronze:** mạng tới HNX; `run_bctc_annual_pipeline(cfg, include_download=True)`; kiểm tra parquet + PDF dưới `data-lake/raw/Semi_Structure_Data/`.
+2. **Silver:** `python -m pipeline.silver.cli --dataset bctc_pdf_meta --run-partition <date>`.
+3. **Load:** `python -m warehouse.loader.cli --dataset bctc_pdf_meta`.
+4. **Gold:** `dbt run --select +mart_bctc_documents`.
+5. **API/UI:** máy chạy FastAPI phải có file PDF tại `pdf_path` (cùng host hoặc mount volume).
+
 ---
 
 ## 9. Data contract tóm tắt
@@ -956,14 +1113,11 @@ Sort: `canonical_priority ASC`, `published_at DESC`, `year DESC`.
 - `stg_bctc_pdf_meta` lọc `display_status != 'error'` trong khi Silver dùng `failed` — filter `'error'` có thể không loại thêm dòng nào.
 - Notebook backfill **500 trang** vs DAG **10 trang** — cùng logic code, khác độ phủ disclosure.
 
+Chi tiết đầy đủ: [Docs/BCTC_data_flow.md](Docs/BCTC_data_flow.md).
+
 ---
 
-Nếu cần đi sâu tiếp: chi tiết regex parse HTML HNX, ma trận `doc_class` × `status` × UI, hoặc so sánh partition `run_date` vs lọc API theo `published_at`.
-
-# Thông tin chi tiết về Lineage SILVER to GOLD tổng quan
-
-
-# Lineage Silver → Gold — tổng quan
+# 7. Lineage Silver → Gold
 
 Dự án dùng **dbt** trên PostgreSQL: **Silver** (`silver.*`) là nguồn đọc trực tiếp; **Gold** (`gold.*`) gồm **staging → intermediate → marts**. Nguồn sự thật là `transform/dbt/models/**` (không phải `warehouse/ddl/schema.sql` legacy).
 
@@ -1174,7 +1328,7 @@ Không có intermediate; không parse số liệu từ PDF.
 
 ---
 
-## 4. Danh sách model Gold (28 SQL)
+## 4. Danh sách model dbt (24 file SQL)
 
 | Model | Loại | Materialized | Silver upstream (gốc) |
 |---|---|---|---|
@@ -1205,7 +1359,7 @@ Không có intermediate; không parse số liệu từ PDF.
 
 ---
 
-## 5. Airflow DAG → subset dbt
+## 5. Airflow DAG → subset dbt (chi tiết selector)
 
 | DAG | Silver load | `dbt --select` |
 |---|---|---|
@@ -1219,33 +1373,113 @@ Không có intermediate; không parse số liệu từ PDF.
 
 ---
 
-## 6. Gold → API (lineage phía consumer)
-
-| UI / use case | Gold model | Endpoint | Khóa thời gian |
-|---|---|---|---|
-| Dashboard thị trường | `mart_market_overview` | `GET /market/overview` | `trading_date` |
-| Chart giá + indicator | `mart_stock_daily` | `GET /prices/{symbol}`, `/indicators/{symbol}` | `trading_date` |
-| News inline trên chart | `mart_stock_daily` (join signal) | `GET /prices/{symbol}` | `trading_date` |
-| Bảng giá / foreign flow | `mart_price_board` | `GET /board/{symbol}`, `/foreign-flow` | `trading_date` |
-| Hồ sơ công ty | `mart_company_profile` | profile API | snapshot |
-| Chỉ số tài chính | `mart_financial_summary` | `GET /financials/{symbol}` | `period` / `year` / `quarter` |
-| Tín hiệu tin | `mart_stock_news_signal` | `GET /news/{symbol}`, `/signal` | `trading_date` (mapped) |
-| Archive tin | `fact_news_article` | `GET /news/articles` | `published_date` |
-| BCTC | `mart_bctc_documents` | `GET /bctc/documents`, `/bctc/{symbol}` | `published_at::date` |
-| Tìm mã | `mart_ticker_directory` | search / directory | — |
-
-Backend **chỉ đọc `gold.*`** — không query trực tiếp `silver.*` từ API.
-
----
-
-## 7. Điểm thiết kế quan trọng
+## 6. Điểm thiết kế quan trọng
 
 1. **Staging ephemeral** (`stg_news`, `stg_bctc_pdf_meta`): không tạo object DB; SQL được inline vào model downstream.
 2. **Join cross-domain duy nhất ở mart:** `mart_stock_daily` ← `mart_stock_news_signal`; `mart_ticker_directory` gom nhiều luồng.
-3. **Incremental tập trung luồng giá:** 4 model; các mart khác full rebuild mỗi lần `dbt run` trong subset DAG.
+3. **Incremental tập trung luồng giá:** 4 model (`int_price_indicator`, `fact_price_daily`, `mart_stock_daily`, `mart_market_overview`); lookback indicator 90 ngày.
 4. **Legacy vẫn build:** `int_news_sentiment_daily`, `mart_stock_news_daily` — không dùng API chính.
-5. **Grain khác nhau theo domain:** phiên GD (`trading_date`) vs ngày đăng tin (`published_date`) vs kỳ BCTC (`period_key` / `year`).
+5. **Grain khác nhau theo domain:** phiên GD (`trading_date`) vs ngày đăng tin (ICT) vs kỳ BCTC (`period_key` / `year`).
+
+Catalog cột đầy đủ: [Docs/dbt_outputs_and_lineage.md](Docs/dbt_outputs_and_lineage.md).
 
 ---
 
-Tài liệu chi tiết cột từng model: [`Docs/dbt_outputs_and_lineage.md`](Docs/dbt_outputs_and_lineage.md). Nếu cần, có thể đi sâu lineage **một nhánh** (ví dụ chỉ `price → mart_stock_daily`, hoặc công thức `mart_stock_news_signal`).
+# 8. Gold → API → Frontend
+
+Backend **chỉ đọc `gold.*`**. Frontend React (Vite) gọi FastAPI — không đọc DB hay parquet.
+
+### Routes UI
+
+| Route | Trang | Mô tả |
+|---|---|---|
+| `/` | `DashboardPage` | Tổng quan thị trường, top movers, tin/BCTC gần đây |
+| `/stock/:symbol` | `StockDetailPage` | Giá, indicator, bảng giá, tin, BCTC, hồ sơ |
+| `/news` | `NewsArchivePage` | Kho tin — lọc ticker, sentiment, ngày ICT |
+| `/bctc` | `BctcArchivePage` | Kho BCTC — lọc mã, năm, ngày |
+
+### Bảng lineage (UI → API → Gold)
+
+| UI / component | API | Gold source | Khóa thời gian |
+|---|---|---|---|
+| Dashboard overview | `GET /market/overview?date=` | `mart_market_overview` | `trading_date` |
+| `IndexCard`, top movers | `/market/overview` | `mart_market_overview` | `trading_date` |
+| `PriceChart`, `IndicatorChart` | `/prices/{symbol}`, `/indicators/{symbol}` | `mart_stock_daily` | `trading_date` |
+| News markers trên chart | `/prices/{symbol}` | `mart_stock_daily` (+ join signal) | `trading_date` |
+| `PriceBoardTable` | `/board/{symbol}` | `mart_price_board` | `trading_date` |
+| Foreign flow | `/board/{symbol}/foreign-flow` | `mart_price_board` | `trading_date` |
+| `FinancialTable` | `/financials/{symbol}?period_type=` | `mart_financial_summary` | `period` / `year` / `quarter` |
+| `NewsPanel`, `NewsSignalBadge` | `/news/{symbol}`, `/news/{symbol}/signal` | `mart_stock_news_signal` | `trading_date` (mapped) |
+| `MarketNewsFeed` | `/news/market` | `fact_news_article` | ngày ICT |
+| `NewsArchivePage` | `/news/articles?from=&to=` | `fact_news_article` | ngày ICT (`Asia/Ho_Chi_Minh`) |
+| `BctcPanel`, `RecentBctcList` | `/bctc/{symbol}`, `/bctc/recent` | `mart_bctc_documents` | `published_at` |
+| `BctcArchivePage` | `/bctc/documents` | `mart_bctc_documents` | `published_at` |
+| `SearchBar` | `/tickers` | `mart_ticker_directory` | — |
+| Hồ sơ công ty | `/companies/{symbol}` | `mart_company_profile` | snapshot |
+
+**Ghi chú UI:** không hiển thị `charter_capital` (dữ liệu không tin cậy); chart OHLCV đủ open/high/low/close; volume trong tooltip.
+
+---
+
+# 9. Runbook & troubleshooting
+
+### Thứ tự chạy local (bắt buộc)
+
+```text
+Bronze (ingestion) → Silver (pipeline/silver) → load-silver → dbt run → API → UI
+```
+
+```powershell
+# Warehouse Postgres
+docker compose up -d                    # :55432
+
+# Sau Bronze/Silver/load + dbt:
+$env:DATABASE_URL = "postgresql://stock:stock@localhost:55432/stock_pipeline"
+uvicorn backend.main:app --reload --port 8000
+
+cd frontend; npm run dev                # http://localhost:5173
+# Swagger: http://localhost:8000/docs
+```
+
+Chỉ cần **`dbt run`** lại sau `load-silver` để cập nhật Gold; refresh trình duyệt để thấy dữ liệu mới.
+
+### Lỗi thường gặp
+
+| Triệu chứng | Nguyên nhân | Cách xử lý |
+|---|---|---|
+| Airflow stuck sau bronze | DAG **paused** | Unpause DAG; đợi scheduler schedule downstream |
+| 2 run trên Grid (manual + scheduled) | Bù slot lịch + trigger tay | Mark failed run scheduled; `max_active_runs=1` |
+| Kho tin trống / API 500 | SQL lỗi hoặc chưa load/dbt news | Kiểm tra log backend; chạy `news_daily` chain |
+| Lọc tin lệch ngày | UTC vs ICT | API + UI dùng `Asia/Ho_Chi_Minh` (xem mục 5) |
+| dbt fail OOM/shm | Postgres `/dev/shm` nhỏ | `shm_size: 512mb` trong `docker-compose.yml` |
+| BCTC PDF 404 | API host không có file local | Cùng máy với `data-lake` hoặc mount volume |
+| Giá chỉ 50 mã mới | DAG daily watchlist | Đúng thiết kế; full history từ notebook backfill |
+
+---
+
+# 10. Phạm vi & hạn chế
+
+### Đã có
+
+- Medallion batch ELT: 8 dataset Silver, 24 model dbt, FastAPI read-only, React dashboard
+- 3 luồng: structured (vnstock), news (RSS/HTML + keyword sentiment), BCTC (HNX metadata + PDF)
+- Airflow 5 DAG, incremental giá, full-refresh nightly
+- Chỉ báo kỹ thuật: MA, RSI, MACD, Bollinger, OBV
+- Tín hiệu tin theo phiên GD: `mart_stock_news_signal`
+
+### Chưa có / ngoài scope
+
+- OCR / parse số liệu từ PDF BCTC
+- Crawl HOSE disclosure
+- Authentication, write API, cloud deploy
+- Streaming realtime intraday
+- ML sentiment nâng cao
+- RAG / chatbot
+
+### Giới hạn vận hành đáng nhắc khi bảo vệ
+
+- DAG daily chỉ cập nhật **50 mã** (price/board); listing refresh **hàng tháng**
+- `mart_market_overview` pivot **VNINDEX, VN30, HNXINDEX** (không gồm HNX30, UPCOMINDEX)
+- Sentiment **keyword_v1** — không chuẩn hóa ML
+- BCTC quarterly chỉ crawl **10 trang** HNX mới nhất (backfill notebook: 500 trang)
+- `data-lake/` gitignore — số liệu demo phụ thuộc máy local đã ingest

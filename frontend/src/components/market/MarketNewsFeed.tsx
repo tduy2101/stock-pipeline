@@ -4,10 +4,10 @@ import { EmptyState } from '@/components/shared/EmptyState'
 import { SentimentBadge } from '@/components/shared/SentimentBadge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useMarketNews } from '@/hooks/useNews'
-import { formatDate } from '@/utils/formatters'
+import { formatNewsPublishDate } from '@/utils/formatters'
 
 export function MarketNewsFeed() {
-  const { data, isLoading } = useMarketNews(8)
+  const { data, isLoading } = useMarketNews(3)
 
   if (isLoading) return <Skeleton className="h-96" />
   if (!data?.length) return <EmptyState message="Không có tin tức thị trường" />
@@ -17,7 +17,7 @@ export function MarketNewsFeed() {
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Newspaper className="text-accent" size={18} />
-          <h2 className="text-sm font-semibold text-app-heading">Tin tức thị trường</h2>
+          <h2 className="text-sm font-semibold text-app-heading">Tin tức thị trường mới nhất</h2>
         </div>
         <Link to="/news" className="text-xs font-medium text-accent hover:underline">
           Xem tất cả
@@ -35,7 +35,7 @@ export function MarketNewsFeed() {
                 <span className="font-mono text-xs font-semibold text-app-muted">THỊ TRƯỜNG</span>
               )}
               <span className="text-xs text-app-muted">{article.source ?? 'Không rõ nguồn'}</span>
-              <span className="text-xs text-app-subtle">{formatDate(article.published_at ?? article.published_date)}</span>
+              <span className="text-xs text-app-subtle">{formatNewsPublishDate(article.published_at, article.published_date)}</span>
               <SentimentBadge label={article.sentiment_label} />
             </div>
             <h3 className="line-clamp-2 text-sm font-semibold leading-6 text-app-heading">

@@ -35,7 +35,20 @@ Pipeline warehouse (root docker-compose.yml)
 | `bctc_quarterly` | 15/02, 15/05, 15/08, 15/11 10:00 | bronze BCTC → silver `bctc_pdf_meta` → load → dbt | `+mart_bctc_documents` |
 | `gold_full_refresh` | Daily 19:00 | `dbt run --full-refresh` + `dbt test` full project | toàn bộ |
 
-Tất cả DAG: `catchup=False`, task tuần tự (không parallel cùng nguồn API).
+Tất cả DAG: `catchup=False`, `max_active_runs=1`, task tuần tự (không parallel cùng nguồn API).
+
+### Trigger manual — chỉ 1 luồng, không “bật thêm” schedule
+
+- Nút **Trigger** chỉ tạo **1 run `manual__...`**. Nó **không** gọi thêm lịch cron.
+- Run **`scheduled__...`** xuất hiện riêng khi scheduler **bù slot lịch hôm nay chưa chạy** (hay gặp sau recreate Airflow / unpause DAG lúc đã qua giờ 06:00 hoặc 16:30).
+- `max_active_runs=1`: tối đa **1 run thực thi** cùng lúc; run kia **chờ** trong Grid (`queued`), không crawl song song.
+
+**Trước khi Trigger tay** (tránh thấy 2 dòng trên Grid):
+
+1. Mở **Grid** → nếu có run `scheduled__...` đang `running` / `queued` → **Mark failed** (hoặc đợi nó xong).
+2. Bấm **Trigger** một lần.
+
+**Để auto đúng giờ:** unpause DAG và **đừng** Trigger thêm — scheduler tự chạy đúng 06:00, 16:30, …
 
 ## Airflow 3.x vs 2.8
 

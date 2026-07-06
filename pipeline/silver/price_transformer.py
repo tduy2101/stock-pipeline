@@ -26,6 +26,39 @@ LOGGER = logging.getLogger(__name__)
 
 PRICE_REQUIRED_COLUMNS = {"ticker", "open", "high", "low", "close", "volume"}
 
+# vnstock OHLC for Vietnamese stocks is quoted in thousands of VND per share.
+STOCK_CLOSE_THOUSANDS_VND = 1000
+
+
+def _trading_value_vnd_factor(instrument_type: str) -> int:
+    return STOCK_CLOSE_THOUSANDS_VND if instrument_type == "stock" else 1
+
+
+def _normalize_trading_value_vnd(
+    close: pd.Series,
+    volume: pd.Series,
+    raw_value: pd.Series,
+    *,
+    instrument_type: str,
+) -> tuple[pd.Series, pd.Series]:
+    """Return trading value in full VND and whether each row was derived."""
+    factor = _trading_value_vnd_factor(instrument_type)
+    vol = pd.to_numeric(volume, errors="coerce")
+    unscaled = close * vol
+    derived_value = unscaled * factor
+    value_was_missing = raw_value.isna()
+
+    normalized = raw_value.copy()
+    if factor > 1:
+        has_raw = raw_value.notna() & unscaled.notna() & (unscaled > 0)
+        ratio = (raw_value / unscaled).where(has_raw)
+        # API value sometimes matches close×volume without the thousands-VND factor.
+        looks_like_unscaled = has_raw & ratio.notna() & ratio.sub(1).abs().lt(0.05)
+        normalized = normalized.where(~looks_like_unscaled, raw_value * factor)
+
+    out_value = normalized.where(~value_was_missing, derived_value)
+    return out_value, value_was_missing
+
 
 @dataclass(slots=True)
 class TransformResult:
@@ -137,9 +170,12 @@ def _coerce_price_like(
         raw_value = pd.to_numeric(out["value"], errors="coerce")
     else:
         raw_value = pd.Series(pd.NA, index=out.index, dtype="Float64")
-    derived_value = out["close"] * pd.to_numeric(out["volume"], errors="coerce")
-    value_was_missing = raw_value.isna()
-    out["value"] = raw_value.where(~value_was_missing, derived_value)
+    out["value"], value_was_missing = _normalize_trading_value_vnd(
+        out["close"],
+        out["volume"],
+        raw_value,
+        instrument_type=expected_instrument_type,
+    )
     if "value_is_derived" in out.columns:
         existing_derived = _coerce_bool(out["value_is_derived"], False)
         out["value_is_derived"] = (existing_derived | value_was_missing).astype("boolean")

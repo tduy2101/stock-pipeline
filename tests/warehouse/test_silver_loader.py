@@ -19,7 +19,7 @@ def _price_frame() -> pd.DataFrame:
             "low": [9.0, 19.0],
             "close": [10.5, 20.5],
             "volume": pd.array([1000, 2000], dtype="Int64"),
-            "value": pd.array([10500.0, 41000.0], dtype="Float64"),
+            "value": pd.array([10_500_000.0, 41_000_000.0], dtype="Float64"),
             "value_is_derived": pd.array([True, False], dtype="boolean"),
             "source": ["kbs", "kbs"],
             "instrument_type": ["stock", "stock"],

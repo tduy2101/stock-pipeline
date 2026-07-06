@@ -251,7 +251,9 @@ def transform_news(
     out["sentiment_score"] = sentiments.map(lambda item: item[0]).astype("Int64")
     out["sentiment_label"] = sentiments.map(lambda item: item[1]).astype("string")
     out["sentiment_method"] = "keyword_v1"
-    out["published_date"] = out["published_at"].dt.date
+    out["published_date"] = (
+        out["published_at"].dt.tz_convert("Asia/Ho_Chi_Minh").dt.date
+    )
     out["silver_loaded_at"] = loaded_at
     out["run_partition"] = run_partition
 

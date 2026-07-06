@@ -19,8 +19,8 @@ export function Header() {
               <BarChart3 size={21} />
             </span>
             <div>
-              <p className="text-sm font-semibold text-app-heading">Vietnam Stock Intelligence</p>
-              <p className="text-xs text-app-muted">Phân tích Gold layer cho thị trường, tin tức và công bố PDF</p>
+              <p className="text-sm font-semibold text-app-heading">Tra cứu thị trường chứng khoán Việt Nam</p>
+              <p className="text-xs text-app-muted">Dữ liệu giá, doanh nghiệp, tin tức và báo cáo tài chính</p>
             </div>
           </Link>
           <div className="flex w-full items-center gap-2 lg:max-w-2xl">
@@ -35,7 +35,7 @@ export function Header() {
               to={item.to}
               end={item.to === '/'}
               className={({ isActive }) =>
-                `inline-flex h-9 shrink-0 items-center gap-2 rounded-md border px-3 text-sm font-medium transition-colors ${
+                `inline-flex h-9 shrink-0 items-center gap-2 rounded-md border px-3 text-sm font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
                   isActive
                     ? 'border-accent bg-accent text-white'
                     : 'border-app-border bg-panel-dark text-app-muted hover:bg-app-hover hover:text-app-heading'

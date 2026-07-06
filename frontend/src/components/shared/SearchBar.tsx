@@ -3,6 +3,19 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTickers } from '@/hooks/useTickers'
 import type { TickerItem } from '@/types'
+import { WATCHLIST_TICKERS } from '@/utils/watchlistTickers'
+
+const emptyTickerItem = (ticker: string): TickerItem => ({
+  ticker,
+  exchange: null,
+  organ_name: null,
+  has_full_profile: false,
+  has_price: false,
+  has_news: false,
+  has_bctc: false,
+  news_count: 0,
+  bctc_doc_count: 0,
+})
 
 const flagBadges = (item: TickerItem): string[] => {
   const badges: string[] = []
@@ -20,16 +33,18 @@ export function SearchBar() {
   const [focused, setFocused] = useState(false)
 
   const suggestions = useMemo(() => {
+    const all = data?.tickers ?? []
+    const byTicker = new Map(all.map((item) => [item.ticker, item]))
     const text = query.trim().toUpperCase()
-    if (!text) return data?.tickers.slice(0, 8) ?? []
-    return (
-      data?.tickers
-        .filter((item) => {
-          const name = item.organ_name?.toUpperCase() ?? ''
-          return item.ticker.toUpperCase().includes(text) || name.includes(text)
-        })
-        .slice(0, 12) ?? []
-    )
+    if (!text) {
+      return WATCHLIST_TICKERS.map((ticker) => byTicker.get(ticker) ?? emptyTickerItem(ticker))
+    }
+    return all
+      .filter((item) => {
+        const name = item.organ_name?.toUpperCase() ?? ''
+        return item.ticker.toUpperCase().includes(text) || name.includes(text)
+      })
+      .slice(0, 12)
   }, [data?.tickers, query])
 
   const goToTicker = (ticker: string) => {

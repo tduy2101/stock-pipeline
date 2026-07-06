@@ -30,6 +30,7 @@ with DAG(
     schedule="30 16 * * 1-5",
     start_date=pendulum.datetime(2025, 1, 1, tz="Asia/Ho_Chi_Minh"),
     catchup=False,
+    max_active_runs=1,
     tags=["structured", "bronze", "silver", "gold"],
     default_args=DEFAULT_ARGS,
     doc_md="""

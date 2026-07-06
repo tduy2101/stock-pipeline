@@ -7,7 +7,8 @@ import { SentimentBadge } from '@/components/shared/SentimentBadge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAllNewsArticles } from '@/hooks/useNews'
 import type { NewsArticleRow } from '@/types'
-import { formatDate, formatPrice, formatVolume } from '@/utils/formatters'
+import { formatDate, formatNewsPublishDate, formatPrice, formatVolume } from '@/utils/formatters'
+import { Calendar } from 'lucide-react';
 
 const PAGE_SIZE = 25
 
@@ -55,9 +56,9 @@ export default function NewsArchivePage() {
               <Newspaper size={20} />
               <span className="text-xs font-semibold uppercase">Kho tin tức</span>
             </div>
-            <h1 className="mt-2 text-2xl font-bold text-app-heading">Kho tin tức đã crawl</h1>
+            <h1 className="mt-2 text-2xl font-bold text-app-heading">Kho tin tức</h1>
             <p className="mt-1 text-sm text-app-muted">
-              Tất cả bài viết trong Gold `fact_news_article`, giữ tiêu đề, tóm tắt, nguồn, sắc thái và link bài gốc.
+              Tìm kiếm bài viết đã thu thập: tiêu đề, mã cổ phiếu, sắc thái và thời gian đăng.
             </p>
           </div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -78,8 +79,11 @@ export default function NewsArchivePage() {
       </section>
 
       <section className="rounded-lg border border-app-border bg-panel-dark p-4">
-        <div className="grid gap-3 lg:grid-cols-[1fr_10rem_11rem_10rem_10rem]">
-          <label className="relative">
+        {/* Thêm items-end để các ô input và select không có label phụ luôn thẳng hàng ở đáy với 2 ô Date */}
+        <div className="grid gap-3 lg:grid-cols-[1fr_10rem_11rem_10rem_10rem] items-end">
+
+          {/* Ô Tìm kiếm */}
+          <div className="relative w-full">
             <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-app-muted" size={16} />
             <input
               value={query}
@@ -87,13 +91,17 @@ export default function NewsArchivePage() {
               placeholder="Tìm theo tiêu đề, tóm tắt, nội dung"
               className="h-10 w-full rounded-lg border border-app-border bg-app-input pl-9 pr-3 text-sm text-app-heading outline-none focus:border-accent"
             />
-          </label>
+          </div>
+
+          {/* Ô Ticker */}
           <input
             value={ticker}
             onChange={(event) => updateFilter(setTicker, event.target.value)}
             placeholder="Ticker"
             className="h-10 rounded-lg border border-app-border bg-app-input px-3 text-sm font-mono text-app-heading outline-none focus:border-accent"
           />
+
+          {/* Ô Sắc thái */}
           <select
             value={sentiment}
             onChange={(event) => updateFilter(setSentiment, event.target.value)}
@@ -104,27 +112,65 @@ export default function NewsArchivePage() {
             <option value="neutral">Trung lập</option>
             <option value="negative">Tiêu cực</option>
           </select>
-          <label className="grid gap-1">
-            <span className="text-[11px] text-app-muted">Từ ngày đăng</span>
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(event) => updateFilter(setFromDate, event.target.value)}
-              className="h-10 rounded-lg border border-app-border bg-app-input px-3 text-sm text-app-heading outline-none focus:border-accent"
-            />
+
+          {/* Ô Từ ngày đăng */}
+          <label className="grid gap-1 relative group cursor-pointer">
+            <span className="text-[11px] font-medium text-app-muted">Từ ngày đăng</span>
+            <div className="relative flex items-center">
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(event) => updateFilter(setFromDate, event.target.value)}
+                className="h-10 w-full rounded-lg border border-app-border bg-app-input pl-3 pr-10 text-sm text-app-heading outline-none focus:border-accent [color-scheme:dark] 
+      [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer
+      /* FIX LỖI ĐÈ CHỮ TẠI ĐÂY: Mặc định ẩn chữ gốc, chỉ hiện khi focus hoặc đã có value */
+      [&::-webkit-datetime-edit]:opacity-0 focus:[&::-webkit-datetime-edit]:opacity-100 data-[has-value=true]:[&::-webkit-datetime-edit]:opacity-100"
+                data-has-value={!!fromDate}
+              />
+              {/* Chữ dd/mm/yyyy giả lập sẽ tự ẩn khi focus hoặc đã có value */}
+              {!fromDate && (
+                <span className="absolute left-3 text-sm text-app-muted pointer-events-none group-focus-within:hidden">
+                  dd/mm/yyyy
+                </span>
+              )}
+              <Calendar
+                size={16}
+                className="absolute right-3 text-app-muted pointer-events-none group-focus-within:text-accent transition-colors"
+              />
+            </div>
           </label>
-          <label className="grid gap-1">
-            <span className="text-[11px] text-app-muted">Đến ngày đăng</span>
-            <input
-              type="date"
-              value={toDate}
-              onChange={(event) => updateFilter(setToDate, event.target.value)}
-              className="h-10 rounded-lg border border-app-border bg-app-input px-3 text-sm text-app-heading outline-none focus:border-accent"
-            />
+
+          {/* Ô Đến ngày đăng */}
+          <label className="grid gap-1 relative group cursor-pointer">
+            <span className="text-[11px] font-medium text-app-muted">Đến ngày đăng</span>
+            <div className="relative flex items-center">
+              <input
+                type="date"
+                value={toDate}
+                onChange={(event) => updateFilter(setToDate, event.target.value)}
+                className="h-10 w-full rounded-lg border border-app-border bg-app-input pl-3 pr-10 text-sm text-app-heading outline-none focus:border-accent [color-scheme:dark] 
+      [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer
+      /* FIX LỖI ĐÈ CHỮ TẠI ĐÂY: Mặc định ẩn chữ gốc, chỉ hiện khi focus hoặc đã có value */
+      [&::-webkit-datetime-edit]:opacity-0 focus:[&::-webkit-datetime-edit]:opacity-100 data-[has-value=true]:[&::-webkit-datetime-edit]:opacity-100"
+                data-has-value={!!toDate}
+              />
+              {/* Chữ dd/mm/yyyy giả lập sẽ tự ẩn khi focus hoặc đã có value */}
+              {!toDate && (
+                <span className="absolute left-3 text-sm text-app-muted pointer-events-none group-focus-within:hidden">
+                  dd/mm/yyyy
+                </span>
+              )}
+              <Calendar
+                size={16}
+                className="absolute right-3 text-app-muted pointer-events-none group-focus-within:text-accent transition-colors"
+              />
+            </div>
           </label>
+
         </div>
       </section>
 
+      
       {isLoading ? (
         <Skeleton className="h-[32rem]" />
       ) : rows.length === 0 ? (
@@ -144,7 +190,7 @@ export default function NewsArchivePage() {
                       <span className="font-mono text-xs font-semibold text-app-muted">THỊ TRƯỜNG</span>
                     )}
                     <span className="text-xs text-app-muted">{article.source ?? 'Không rõ nguồn'}</span>
-                    <span className="text-xs text-app-subtle">{formatDate(article.published_at ?? article.published_date)}</span>
+                    <span className="text-xs text-app-subtle">{formatNewsPublishDate(article.published_at, article.published_date)}</span>
                     <SentimentBadge label={article.sentiment_label} />
                     <span className="text-xs text-app-muted">Điểm {formatPrice(article.sentiment_score)}</span>
                   </div>
@@ -221,7 +267,7 @@ export default function NewsArchivePage() {
                     {previewArticle.source ?? 'Không rõ nguồn'}
                   </span>
                   <span className="text-xs text-app-subtle">
-                    {formatDate(previewArticle.published_at ?? previewArticle.published_date)}
+                    {formatNewsPublishDate(previewArticle.published_at, previewArticle.published_date)}
                   </span>
                   <SentimentBadge label={previewArticle.sentiment_label} />
                 </div>

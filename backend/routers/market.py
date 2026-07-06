@@ -72,4 +72,11 @@ def market_overview(
 
     if row is None:
         raise HTTPException(404, "Khong tim thay du lieu thi truong")
+
+    advances = row.get("advances") or 0
+    declines = row.get("declines") or 0
+    unchanged = row.get("unchanged") or 0
+    universe_size = advances + declines + unchanged
+    row["universe_size"] = universe_size if universe_size > 0 else None
+
     return MarketOverviewResponse(**row)

@@ -1,28 +1,90 @@
-import { format } from 'date-fns'
+import { format, parseISO } from 'date-fns'
+
+const viNumber = (value: number, options?: Intl.NumberFormatOptions) =>
+  new Intl.NumberFormat('vi-VN', options).format(value)
+
+const parseDateValue = (value: string): Date => {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return parseISO(value)
+  }
+  return new Date(value)
+}
 
 export const formatPrice = (value: number | null | undefined): string => {
   if (value == null) return 'N/A'
-  return new Intl.NumberFormat('vi-VN', {
+  return viNumber(value, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })
+}
+
+export const formatIndexPoints = (value: number | null | undefined): string => {
+  if (value == null) return 'N/A'
+  return `${viNumber(value, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(value)
+  })} điểm`
 }
 
 export const formatVolume = (value: number | null | undefined): string => {
   if (value == null) return 'N/A'
-  return new Intl.NumberFormat('vi-VN').format(value)
+  return viNumber(value, { maximumFractionDigits: 0 })
 }
+
+export const formatCompactShares = (value: number | null | undefined): string => {
+  if (value == null) return 'N/A'
+  const abs = Math.abs(value)
+  if (abs >= 1_000_000_000) {
+    return `${viNumber(value / 1_000_000_000, { maximumFractionDigits: 2 })} tỷ cổ phiếu`
+  }
+  if (abs >= 1_000_000) {
+    return `${viNumber(value / 1_000_000, { maximumFractionDigits: 2 })} triệu cổ phiếu`
+  }
+  if (abs >= 1_000) {
+    return `${viNumber(value / 1_000, { maximumFractionDigits: 2 })} nghìn cổ phiếu`
+  }
+  return `${viNumber(value, { maximumFractionDigits: 0 })} cổ phiếu`
+}
+
+/** Trading value stored as full VND (close × volume from silver.price). */
+export const formatTradingValueVnd = (value: number | null | undefined): string => {
+  if (value == null) return 'N/A'
+  const abs = Math.abs(value)
+  if (abs >= 1_000_000_000_000) {
+    return formatTradingValueThousandBillionVnd(value)
+  }
+  if (abs >= 1_000_000_000) {
+    return `${viNumber(value / 1_000_000_000, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })} tỷ đồng`
+  }
+  if (abs >= 1_000_000) {
+    return `${viNumber(value / 1_000_000, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })} triệu đồng`
+  }
+  return `${viNumber(value, { maximumFractionDigits: 0 })} đồng`
+}
+
+/** Market/session turnover: always express as nghìn tỷ đồng (value / 10^12 VND). */
+export const formatTradingValueThousandBillionVnd = (
+  value: number | null | undefined,
+): string => {
+  if (value == null) return 'N/A'
+  return `${viNumber(value / 1_000_000_000_000, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })} nghìn tỷ đồng`
+}
+
+/** @deprecated Use formatTradingValueVnd — kept for gradual migration */
+export const formatBillionVnd = formatTradingValueVnd
 
 export const formatShares = (value: number | null | undefined): string => {
   if (value == null) return 'N/A'
   return `${formatVolume(value)} cổ phiếu`
-}
-
-export const formatBillionVnd = (value: number | null | undefined): string => {
-  if (value == null) return 'N/A'
-  return `${new Intl.NumberFormat('vi-VN', {
-    maximumFractionDigits: 2,
-  }).format(value / 1_000_000_000)} tỷ VND`
 }
 
 export const formatBytes = (value: number | null | undefined): string => {
@@ -35,9 +97,7 @@ export const formatBytes = (value: number | null | undefined): string => {
     size /= 1024
     unitIndex += 1
   }
-  return `${new Intl.NumberFormat('vi-VN', {
-    maximumFractionDigits: 1,
-  }).format(size)} ${units[unitIndex]}`
+  return `${viNumber(size, { maximumFractionDigits: 1 })} ${units[unitIndex]}`
 }
 
 export const formatCompact = (value: number | null | undefined): string => {
@@ -53,7 +113,10 @@ export const formatPercent = (
   showSign = true,
 ): string => {
   if (value == null) return 'N/A'
-  const pct = (value * 100).toFixed(2)
+  const pct = viNumber(value * 100, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
   if (!showSign) return `${pct}%`
   return value >= 0 ? `+${pct}%` : `${pct}%`
 }
@@ -63,7 +126,10 @@ export const formatPercentPoints = (
   showSign = false,
 ): string => {
   if (value == null) return 'N/A'
-  const pct = value.toFixed(2)
+  const pct = viNumber(value, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
   if (!showSign) return `${pct}%`
   return value >= 0 ? `+${pct}%` : `${pct}%`
 }
@@ -82,7 +148,36 @@ export const sentimentColor = (label: string | null | undefined): string => {
 export const formatDate = (value: string | null | undefined): string => {
   if (!value) return 'N/A'
   try {
-    return format(new Date(value), 'dd/MM/yyyy')
+    return format(parseDateValue(value), 'dd/MM/yyyy')
+  } catch {
+    return value
+  }
+}
+
+/** Ngày đăng tin theo giờ VN — khớp bộ lọc API /news (ICT). */
+export const formatNewsPublishDate = (
+  publishedAt: string | null | undefined,
+  publishedDate: string | null | undefined,
+): string => {
+  if (publishedAt) {
+    try {
+      return new Intl.DateTimeFormat('vi-VN', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+      }).format(parseDateValue(publishedAt))
+    } catch {
+      // fall through to published_date
+    }
+  }
+  return formatDate(publishedDate)
+}
+
+export const formatDateTime = (value: string | null | undefined): string => {
+  if (!value) return 'N/A'
+  try {
+    return format(parseDateValue(value), 'dd/MM/yyyy HH:mm')
   } catch {
     return value
   }

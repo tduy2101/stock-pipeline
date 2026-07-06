@@ -64,6 +64,9 @@ export function FinancialTable({ symbol }: FinancialTableProps) {
 
   return (
     <div className="grid gap-4">
+      <p className="mb-3 text-xs text-app-muted">
+        Chỉ số tài chính theo kỳ báo cáo (quý/năm). Số liệu từ báo cáo tổng hợp, không phải giá thị trường.
+      </p>
       <div className="flex flex-wrap gap-2">
         {[
           { label: 'Quý', value: 'quarter' },

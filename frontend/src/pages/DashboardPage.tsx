@@ -1,41 +1,84 @@
-import { Activity, ArrowRight, Database, FileText, Newspaper } from 'lucide-react'
+import { ArrowRight, CalendarDays, Database, FileText, Newspaper } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { MarketOverviewSection } from '@/components/market/MarketOverviewSection'
 import { MarketNewsFeed } from '@/components/market/MarketNewsFeed'
 import { RecentBctcList } from '@/components/market/RecentBctcList'
 import { PageWrapper } from '@/components/layout/PageWrapper'
+import { StatCard } from '@/components/shared/StatCard'
+import { Skeleton } from '@/components/ui/skeleton'
+import { useMarketOverview } from '@/hooks/useMarketOverview'
 import { useTickers } from '@/hooks/useTickers'
+import { resolveUniverseSize } from '@/utils/marketScope'
+import { formatDate } from '@/utils/formatters'
 
 export default function DashboardPage() {
-  const { data } = useTickers()
-  const newsTickerCount = data?.tickers.filter((item) => item.has_news).length ?? 0
-  const bctcTickerCount = data?.tickers.filter((item) => item.has_bctc).length ?? 0
+  const { data: tickers, isLoading: tickersLoading } = useTickers()
+  const { data: market, isLoading: marketLoading } = useMarketOverview()
+
+  const newsTickerCount = tickers?.tickers.filter((item) => item.has_news).length ?? 0
+  const bctcTickerCount = tickers?.tickers.filter((item) => item.has_bctc).length ?? 0
+  const totalBctcDocs =
+    tickers?.tickers.reduce((sum, item) => sum + (item.bctc_doc_count ?? 0), 0) ?? 0
+  const tickerTotal = tickers?.total ?? 0
 
   return (
     <PageWrapper>
-      <section className="flex flex-col gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-app-heading">Vietnam Stock Intelligence</h1>
-          <p className="mt-1 text-sm text-app-muted">
-            Bảng điều khiển Gold layer cho giá, sắc thái tin tức và BCTC PDF của thị trường chứng khoán Việt Nam.
+      <section className="flex flex-col gap-2">
+        <h1 className="text-2xl font-bold text-app-heading">Tổng quan thị trường</h1>
+        <p className="max-w-4xl text-sm leading-6 text-app-muted">
+          Tra cứu giá cổ phiếu, hồ sơ doanh nghiệp, tin tức và báo cáo tài chính PDF đã được
+          tổng hợp từ nhiều nguồn dữ liệu công khai.
+        </p>
+        {marketLoading ? (
+          <Skeleton className="h-4 w-56" />
+        ) : market ? (
+          <p className="text-xs text-app-subtle">
+            Phiên dữ liệu mới nhất:{' '}
+            <strong className="text-app-text">{formatDate(market.trading_date)}</strong>
+            {(() => {
+              const sessionSize = market ? resolveUniverseSize(market) : 0
+              if (sessionSize <= 0) return null
+              return (
+                <>
+                  {' '}
+                  · {new Intl.NumberFormat('vi-VN').format(sessionSize)} mã có dữ liệu giá trong
+                  phiên (khác với tổng mã trong hệ thống bên dưới)
+                </>
+              )
+            })()}
           </p>
-        </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          {[
-            { icon: Activity, label: 'Tầng thị trường', value: 'Gold marts', note: 'Giá và chỉ số thị trường' },
-            { icon: Database, label: 'Danh mục mã', value: `${data?.total ?? 0} mã`, note: 'Listing, hồ sơ, giá, tin tức, BCTC' },
-            { icon: FileText, label: 'Tài liệu công bố', value: `${bctcTickerCount} mã`, note: 'Ticker có BCTC PDF' },
-          ].map((item) => (
-            <div key={item.label} className="flex items-center gap-3 rounded-lg border border-app-border bg-panel-dark p-4">
-              <item.icon className="text-accent" size={18} />
-              <div>
-                <p className="text-xs text-app-muted">{item.label}</p>
-                <p className="text-sm font-semibold text-app-heading">{item.value}</p>
-                <p className="mt-1 text-xs text-app-subtle">{item.note}</p>
-              </div>
-            </div>
-          ))}
-        </div>
+        ) : null}
+      </section>
+
+      <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {tickersLoading || marketLoading ? (
+          <>
+            <Skeleton className="h-28" />
+            <Skeleton className="h-28" />
+            <Skeleton className="h-28" />
+          </>
+        ) : (
+          <>
+            <StatCard
+              icon={CalendarDays}
+              label="Phiên mới nhất"
+              value={market ? formatDate(market.trading_date) : 'Chưa có dữ liệu'}
+              note="Giá và chỉ số thị trường đã cập nhật"
+            />
+            <StatCard
+              icon={Database}
+              label="Mã trong hệ thống"
+              value={`${new Intl.NumberFormat('vi-VN').format(tickerTotal)} mã`}
+              note="Danh mục hợp nhất từ niêm yết, giá, doanh nghiệp, tin tức và BCTC — không trùng với số mã có giá trong một phiên"
+            />
+            <StatCard
+              icon={FileText}
+              label="BCTC PDF"
+              value={`${new Intl.NumberFormat('vi-VN').format(totalBctcDocs)} tài liệu`}
+              note={`${new Intl.NumberFormat('vi-VN').format(bctcTickerCount)} mã cổ phiếu có tài liệu`}
+            />
+          </>
+        )}
       </section>
 
       <MarketOverviewSection />
@@ -45,27 +88,27 @@ export default function DashboardPage() {
           {
             to: '/news',
             icon: Newspaper,
-            title: 'Kho tin tức đã crawl',
-            value: `${newsTickerCount} mã có tin`,
-            description: 'Mở trang tổng hợp tất cả bài báo, lọc theo ticker, sắc thái và nội dung.',
+            title: 'Kho tin tức',
+            value: `${new Intl.NumberFormat('vi-VN').format(newsTickerCount)} mã có tin`,
+            description: 'Tìm kiếm bài viết theo mã, sắc thái và khoảng thời gian.',
           },
           {
             to: '/bctc',
             icon: FileText,
             title: 'Kho BCTC PDF',
-            value: `${bctcTickerCount} mã có PDF`,
-            description: 'Mở trang tổng hợp tài liệu BCTC, lọc theo ticker, năm và tiêu đề.',
+            value: `${new Intl.NumberFormat('vi-VN').format(totalBctcDocs)} tài liệu`,
+            description: 'Tra cứu báo cáo tài chính đã crawl, lọc theo mã và năm báo cáo.',
           },
         ].map((item) => (
           <Link
             key={item.to}
             to={item.to}
-            className="group rounded-lg border border-app-border bg-panel-dark p-5 transition-colors hover:border-accent/60 hover:bg-app-hover"
+            className="group rounded-lg border border-app-border bg-panel-dark p-5 transition-colors hover:border-accent/60 hover:bg-app-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             <div className="flex items-start justify-between gap-4">
               <div className="flex min-w-0 gap-3">
                 <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-accent/10 text-accent">
-                  <item.icon size={20} />
+                  <item.icon size={20} aria-hidden />
                 </span>
                 <div className="min-w-0">
                   <h2 className="text-base font-semibold text-app-heading">{item.title}</h2>
@@ -73,7 +116,11 @@ export default function DashboardPage() {
                   <p className="mt-3 font-mono text-sm font-semibold text-app-heading">{item.value}</p>
                 </div>
               </div>
-              <ArrowRight className="shrink-0 text-app-muted transition-colors group-hover:text-accent" size={18} />
+              <ArrowRight
+                className="shrink-0 text-app-muted transition-colors group-hover:text-accent"
+                size={18}
+                aria-hidden
+              />
             </div>
           </Link>
         ))}

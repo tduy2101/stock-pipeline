@@ -34,6 +34,7 @@ export interface MarketOverviewResponse {
   advances: number | null
   declines: number | null
   unchanged: number | null
+  universe_size: number | null
   top_gainers: TopMover[] | null
   top_losers: TopMover[] | null
 }

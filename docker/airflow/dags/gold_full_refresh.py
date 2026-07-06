@@ -22,6 +22,7 @@ with DAG(
     schedule="0 19 * * *",
     start_date=pendulum.datetime(2025, 1, 1, tz="Asia/Ho_Chi_Minh"),
     catchup=False,
+    max_active_runs=1,
     tags=["gold", "dbt"],
     default_args=DEFAULT_ARGS,
     doc_md="""

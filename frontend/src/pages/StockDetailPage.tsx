@@ -39,7 +39,7 @@ export default function StockDetailPage() {
   if (!company) {
     return (
       <PageWrapper className="items-center py-20 text-center">
-        <EmptyState message={`Không tìm thấy ticker ${ticker}`} subMessage="Quay lại dashboard để chọn ticker khác" />
+        <EmptyState message={`Không tìm thấy mã ${ticker}`} subMessage="Thử tìm mã khác từ thanh tìm kiếm hoặc quay về tổng quan." />
         <Link to="/" className="text-sm font-medium text-accent hover:underline">
           Về tổng quan
         </Link>
@@ -57,9 +57,9 @@ export default function StockDetailPage() {
 
       {company.has_full_profile === false && (
         <section className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4">
-          <p className="text-sm font-medium text-amber-200">Dữ liệu hạn chế</p>
+          <p className="text-sm font-medium text-amber-200">Hồ sơ chưa đầy đủ</p>
           <p className="mt-1 text-xs text-app-muted">
-            Ticker này có trong directory hợp nhất nhưng thiếu profile đầy đủ. Các tab có dữ liệu sẽ vẫn hiển thị bình thường.
+            Mã có trong danh mục nhưng thiếu một số thông tin doanh nghiệp. Các tab khác vẫn hiển thị nếu có dữ liệu.
           </p>
         </section>
       )}
@@ -91,7 +91,9 @@ export default function StockDetailPage() {
               <p className="font-mono text-3xl font-bold text-app-heading">{formatPrice(company.latest_close)}</p>
               <NewsSignalBadge symbol={ticker} />
             </div>
-            <p className="mt-1 text-xs text-app-muted">Giá đóng cửa / ngày {formatDate(company.latest_trading_date)}</p>
+            <p className="mt-1 text-xs text-app-muted">
+              Giá đóng cửa · {formatDate(company.latest_trading_date)}
+            </p>
           </div>
         </div>
       </section>
@@ -140,11 +142,11 @@ export default function StockDetailPage() {
       </section>
 
       <Tabs defaultValue="overview">
-        <TabsList>
+        <TabsList className="flex-wrap">
           <TabsTrigger value="overview">Tổng quan</TabsTrigger>
-          <TabsTrigger value="chart">Biểu đồ</TabsTrigger>
-          <TabsTrigger value="board">Bảng giá</TabsTrigger>
+          <TabsTrigger value="chart">Biểu đồ giá</TabsTrigger>
           <TabsTrigger value="indicators">Chỉ báo</TabsTrigger>
+          <TabsTrigger value="board">Bảng giá</TabsTrigger>
           <TabsTrigger value="financials">Tài chính</TabsTrigger>
           <TabsTrigger value="news">Tin tức</TabsTrigger>
           <TabsTrigger value="bctc">BCTC</TabsTrigger>
@@ -202,8 +204,13 @@ export default function StockDetailPage() {
         </TabsContent>
 
         <TabsContent value="chart" className="mt-4 rounded-lg border border-app-border bg-card-dark p-5">
-          <h2 className="mb-4 text-sm font-semibold text-app-heading">Biểu đồ giá</h2>
+          <h2 className="mb-4 text-sm font-semibold text-app-heading">Biểu đồ giá lịch sử</h2>
           <PriceChart symbol={ticker} fromDate={fromDate} toDate={toDate} />
+        </TabsContent>
+
+        <TabsContent value="indicators" className="mt-4 rounded-lg border border-app-border bg-card-dark p-5">
+          <h2 className="mb-4 text-sm font-semibold text-app-heading">Chỉ báo kỹ thuật</h2>
+          <IndicatorChart symbol={ticker} fromDate={fromDate} toDate={toDate} />
         </TabsContent>
 
         <TabsContent value="board" className="mt-4 grid gap-5">
@@ -215,23 +222,21 @@ export default function StockDetailPage() {
           </section>
         </TabsContent>
 
-        <TabsContent value="indicators" className="mt-4 rounded-lg border border-app-border bg-card-dark p-5">
-          <h2 className="mb-4 text-sm font-semibold text-app-heading">Chỉ báo kỹ thuật</h2>
-          <IndicatorChart symbol={ticker} fromDate={fromDate} toDate={toDate} />
-        </TabsContent>
-
         <TabsContent value="financials" className="mt-4 rounded-lg border border-app-border bg-card-dark p-5">
           <h2 className="mb-4 text-sm font-semibold text-app-heading">Chỉ số tài chính</h2>
           <FinancialTable symbol={ticker} />
         </TabsContent>
 
         <TabsContent value="news" className="mt-4 rounded-lg border border-app-border bg-card-dark p-5">
-          <h2 className="mb-4 text-sm font-semibold text-app-heading">Tin tức và sắc thái</h2>
+          <h2 className="mb-4 text-sm font-semibold text-app-heading">Tin tức theo phiên giao dịch</h2>
           <NewsPanel symbol={ticker} fromDate={fromDate} toDate={toDate} />
         </TabsContent>
 
         <TabsContent value="bctc" className="mt-4 rounded-lg border border-app-border bg-card-dark p-5">
-          <h2 className="mb-4 text-sm font-semibold text-app-heading">Báo cáo tài chính PDF</h2>
+          <h2 className="mb-4 text-sm font-semibold text-app-heading">Kho tài liệu BCTC PDF</h2>
+          <p className="mb-4 text-xs text-app-muted">
+            Danh mục báo cáo tài chính đã crawl. Mở PDF để xem nội dung gốc — hệ thống chưa trích xuất số liệu từ file.
+          </p>
           <BctcPanel symbol={ticker} fromDate={fromDate} toDate={toDate} />
         </TabsContent>
       </Tabs>

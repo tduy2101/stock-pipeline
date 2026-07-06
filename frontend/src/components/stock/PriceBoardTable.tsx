@@ -3,6 +3,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { usePriceBoard } from '@/hooks/useBoard'
 import type { PriceBoardRow } from '@/types'
 
+import { formatDate, formatPrice, formatVolume } from '@/utils/formatters'
+
 interface PriceBoardTableProps {
   symbol: string
   fromDate?: string
@@ -10,7 +12,7 @@ interface PriceBoardTableProps {
 }
 
 const formatNumber = (value: number | null | undefined) =>
-  value == null ? 'N/A' : value.toLocaleString('vi-VN')
+  value == null ? 'N/A' : formatPrice(value)
 
 function PriceCell({
   price,
@@ -38,7 +40,7 @@ function PriceCell({
 
   return (
     <span className={`font-mono font-semibold ${className}`}>
-      {price.toLocaleString('vi-VN')}
+      {formatPrice(price)}
     </span>
   )
 }
@@ -60,7 +62,7 @@ export function PriceBoardTable({ symbol, fromDate, toDate }: PriceBoardTablePro
   return (
     <div className="grid gap-4">
       <h3 className="text-sm font-semibold text-app-heading">
-        Bảng giá {row.trading_date ? new Date(row.trading_date).toLocaleDateString('vi-VN') : 'gần nhất'}
+        Bảng giá · {row.trading_date ? formatDate(row.trading_date) : 'gần nhất'}
       </h3>
 
       <div className="grid grid-cols-3 gap-3 text-sm">
@@ -127,8 +129,8 @@ export function PriceBoardTable({ symbol, fromDate, toDate }: PriceBoardTablePro
           </div>
         </div>
         <div className="rounded-lg border border-app-border bg-app-hover p-3">
-          <div className="mb-1">Room ngoại còn lại</div>
-          <div className="font-mono text-app-heading">{formatNumber(row.foreign_room)}</div>
+          <div className="mb-1">Room khối ngoại còn lại</div>
+          <div className="font-mono text-app-heading">{formatVolume(row.foreign_room)}</div>
         </div>
       </div>
     </div>

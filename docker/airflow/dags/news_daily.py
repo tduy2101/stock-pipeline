@@ -28,6 +28,7 @@ with DAG(
     schedule="0 6 * * *",
     start_date=pendulum.datetime(2025, 1, 1, tz="Asia/Ho_Chi_Minh"),
     catchup=False,
+    max_active_runs=1,
     tags=["news", "bronze", "silver", "gold"],
     default_args=DEFAULT_ARGS,
     doc_md="""

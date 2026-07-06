@@ -21,3 +21,4 @@ class MarketOverviewResponse(BaseModel):
     unchanged: int | None
     top_gainers: Any | None
     top_losers: Any | None
+    universe_size: int | None = None

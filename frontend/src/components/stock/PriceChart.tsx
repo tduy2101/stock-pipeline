@@ -120,15 +120,16 @@ export function PriceChart({ symbol, fromDate, toDate }: PriceChartProps) {
           ))
         )}
       </div>
-      <div className="h-80">
+      <div className="h-[22rem]">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={rows} margin={{ top: 10, right: 12, bottom: 0, left: 0 }}>
+          <LineChart data={rows} margin={{ top: 10, right: 12, bottom: 0, left: 4 }}>
             <CartesianGrid stroke={chartTheme.grid} strokeDasharray="3 3" />
             <XAxis
               dataKey="trading_date"
               stroke={chartTheme.axis}
               tick={{ fontSize: 11 }}
-              tickFormatter={(value: string) => value.slice(5)}
+              minTickGap={32}
+              tickFormatter={(value: string) => formatDate(value).slice(0, 5)}
             />
             <YAxis
               stroke={chartTheme.axis}
