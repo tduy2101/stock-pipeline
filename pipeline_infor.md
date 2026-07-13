@@ -8,11 +8,12 @@ Cập nhật: 2026-07-03
 
 | File | Nội dung |
 |---|---|
-| [Docs/Structure_data_flow.md](Docs/Structure_data_flow.md) | vnstock, OHLCV, listing, ratio, price board |
-| [Docs/News_data_flow.md](Docs/News_data_flow.md) | RSS/HTML, sentiment, `mart_stock_news_signal` |
-| [Docs/BCTC_data_flow.md](Docs/BCTC_data_flow.md) | HNX crawl, PDF, `mart_bctc_documents` |
-| [Docs/dbt_outputs_and_lineage.md](Docs/dbt_outputs_and_lineage.md) | Cột Silver/Gold, lineage API |
-| [Docs/parameters.md](Docs/parameters.md) | Tham số 4 lớp (env / config / CLI / DAG) |
+| [Docs/README.md](Docs/README.md) | Mục lục chuẩn cho toàn bộ tài liệu dự án |
+| [Docs/codex-audit/Structure_data_flow.md](Docs/codex-audit/Structure_data_flow.md) | vnstock, OHLCV, listing, ratio, price board |
+| [Docs/codex-audit/News_data_flow.md](Docs/codex-audit/News_data_flow.md) | RSS/HTML, sentiment, `mart_stock_news_signal` |
+| [Docs/codex-audit/BCTC_data_flow.md](Docs/codex-audit/BCTC_data_flow.md) | HNX crawl, PDF, `mart_bctc_documents` |
+| [Docs/codex-audit/dbt_outputs_and_lineage.md](Docs/codex-audit/dbt_outputs_and_lineage.md) | Cột Silver/Gold, lineage API |
+| [Docs/codex-audit/parameters.md](Docs/codex-audit/parameters.md) | Tham số 4 lớp (env / config / CLI / DAG) |
 | [README.md](README.md) | Runbook, snapshot, endpoints |
 | [docker/airflow/README_airflow.md](docker/airflow/README_airflow.md) | Airflow 3.2, DAG, troubleshooting |
 

@@ -35,7 +35,8 @@ secrets.*
 data-lake/
 vnstock-agent-guide/
 code_reference&Plan/
-Docs/
+
+# Project documentation is source-controlled
 # OS / editor
 .DS_Store
 .idea/
