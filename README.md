@@ -430,3 +430,5 @@ $env:DATABASE_URL = "postgresql://stock:stock@localhost:55432/stock_pipeline"
 uvicorn backend.main:app --reload --port 8000
 cd <repo-root>\frontend; npm run dev
 ```
+
+CHI TIẾT HƠN ĐỌC TÀI LIỆU TRONG `Docs\`
