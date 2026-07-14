@@ -52,6 +52,55 @@ Nguyên tắc vận hành:
 - **Serving layer**: FastAPI read-only + React dashboard.
 - **Orchestration**: Airflow 3.2 với các DAG theo lịch.
 
+## Ảnh output cuối cùng
+
+Các ảnh dưới đây là một số màn hình cuối cùng của sản phẩm, dùng để minh họa output của luồng dữ liệu end-to-end.
+
+<div align="center">
+        <img src="Docs/Images/UI/1_Dashboard.png" alt="Dashboard" width="100%">
+</div>
+
+<table>
+        <tr>
+                <td align="center" width="50%">
+                        <img src="Docs/Images/UI/2_Main_NEWS.png" alt="News archive" width="100%"><br>
+                        <b>Kho tin tức</b><br>
+                        <sub>Duyệt theo bài viết, ticker và sentiment.</sub>
+                </td>
+                <td align="center" width="50%">
+                        <img src="Docs/Images/UI/3_Main_BCTC.png" alt="BCTC archive" width="100%"><br>
+                        <b>Kho BCTC PDF</b><br>
+                        <sub>Tra cứu metadata và mở PDF trực tiếp.</sub>
+                </td>
+        </tr>
+        <tr>
+                <td align="center" width="50%">
+                        <img src="Docs/Images/UI/4_Detail_TICKER.png" alt="Ticker detail" width="100%"><br>
+                        <b>Trang chi tiết mã</b><br>
+                        <sub>Tổng hợp giá, news, BCTC, chỉ báo và hồ sơ.</sub>
+                </td>
+                <td align="center" width="50%">
+                        <img src="Docs/Images/UI/Detail_OHLCV.png" alt="OHLCV detail" width="100%"><br>
+                        <b>Biểu đồ giá</b><br>
+                        <sub>Hiển thị OHLCV theo khoảng thời gian.</sub>
+                </td>
+        </tr>
+        <tr>
+                <td align="center" width="50%">
+                        <img src="Docs/Images/UI/Detail_TechnicIndex.png" alt="Technical indicators" width="100%"><br>
+                        <b>Chỉ báo kỹ thuật</b><br>
+                        <sub>MA, RSI, MACD, Bollinger Bands.</sub>
+                </td>
+                <td align="center" width="50%">
+                        <img src="Docs/Images/UI/Detail_Priceboard.png" alt="Price board detail" width="100%"><br>
+                        <b>Price board</b><br>
+                        <sub>Bid/ask, spread và foreign flow.</sub>
+                </td>
+        </tr>
+</table>
+
+> Còn các ảnh chi tiết khác của portfolio UI nằm trong `Docs/Images/UI/` như `Detail_NEWS.png`, `Detail_FinancialRatio.png`, `Detail_BCTC.png`.
+
 ## Tài liệu chính thức
 
 - `Docs/README.md` — mục lục tài liệu chuẩn của dự án.
