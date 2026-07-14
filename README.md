@@ -55,11 +55,11 @@ Nguyên tắc vận hành:
 ## Tài liệu chính thức
 
 - `Docs/README.md` — mục lục tài liệu chuẩn của dự án.
-- `Docs/codex-audit/Structure_data_flow.md` — luồng structured data.
-- `Docs/codex-audit/News_data_flow.md` — luồng news.
-- `Docs/codex-audit/BCTC_data_flow.md` — luồng BCTC PDF.
-- `Docs/codex-audit/dbt_outputs_and_lineage.md` — Silver → Gold lineage, API/UI mapping.
-- `Docs/codex-audit/parameters.md` — biến môi trường, config, CLI, DAG.
+- `Docs/Overview_Flow/Structure_data_flow.md` — luồng structured data.
+- `Docs/Overview_Flow/News_data_flow.md` — luồng news.
+- `Docs/Overview_Flow/BCTC_data_flow.md` — luồng BCTC PDF.
+- `Docs/Output & Param/dbt_outputs_and_lineage.md` — Silver → Gold lineage, API/UI mapping.
+- `Docs/Output & Param/parameters.md` — biến môi trường, config, CLI, DAG.
 - `docker/airflow/README_airflow.md` — hướng dẫn Airflow.
 
 ## Cấu trúc repository
